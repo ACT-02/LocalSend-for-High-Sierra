@@ -1,0 +1,260 @@
+name: Sync upstream LocalSend releases
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional official LocalSend release tag to synchronize"
+        required: false
+        default: ""
+        type: string
+      force_sync:
+        description: "Re-synchronize even if this release is already marked as synced"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: high-sierra-upstream-release-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync latest official release and start High Sierra backport
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout High Sierra repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Resolve official LocalSend release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
+          FORCE_SYNC: ${{ inputs.force_sync || false }}
+        run: |
+          set -euo pipefail
+
+          API_ROOT="https://api.github.com/repos/localsend/localsend"
+
+          if [ -n "${REQUESTED_TAG:-}" ]; then
+            if ! [[ "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+              echo "ERROR: invalid LocalSend release tag: $REQUESTED_TAG"
+              exit 1
+            fi
+            RELEASE_URL="$API_ROOT/releases/tags/$REQUESTED_TAG"
+          else
+            RELEASE_URL="$API_ROOT/releases/latest"
+          fi
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$RELEASE_URL" \
+            > "$RUNNER_TEMP/localsend-release.json"
+
+          TAG="$(
+            python3 - "$RUNNER_TEMP/localsend-release.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          data = json.loads(Path(sys.argv[1]).read_text())
+
+          if data.get("draft"):
+              raise SystemExit("ERROR: refusing to synchronize a draft release.")
+          if data.get("prerelease"):
+              raise SystemExit("ERROR: refusing to synchronize a prerelease.")
+
+          tag = data.get("tag_name")
+          if not isinstance(tag, str) or not tag:
+              raise SystemExit("ERROR: official release has no tag_name.")
+
+          print(tag)
+          PY
+          )"
+
+          CURRENT=""
+          if [ -s .high-sierra/last-synced-release.txt ]; then
+            CURRENT="$(tr -d '\r\n' < .high-sierra/last-synced-release.txt)"
+          fi
+
+          echo "Official release: $TAG"
+          echo "Last synchronized release: ${CURRENT:-<none>}"
+
+          if [ "$TAG" = "$CURRENT" ] && [ "${FORCE_SYNC}" != "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch official release source
+        id: source
+        if: steps.release.outputs.changed == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euxo pipefail
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/localsend/localsend.git
+
+          git fetch \
+            --force \
+            --no-tags \
+            upstream \
+            "refs/tags/${TAG}:refs/tags/__localsend_release"
+
+          UPSTREAM_COMMIT="$(
+            git rev-parse "refs/tags/__localsend_release^{commit}"
+          )"
+
+          echo "Official release commit: $UPSTREAM_COMMIT"
+          echo "commit=$UPSTREAM_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Compose High Sierra release tree
+        if: steps.release.outputs.changed == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          set -euxo pipefail
+
+          PARENT="$(git rev-parse HEAD)"
+          KEEP_ROOT="$RUNNER_TEMP/high-sierra-preserve"
+
+          rm -rf "$KEEP_ROOT"
+          mkdir -p "$KEEP_ROOT/.github/workflows" "$KEEP_ROOT/.high-sierra"
+
+          cp .github/workflows/macos-high-sierra.yml \
+            "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml"
+          cp .github/workflows/sync-upstream-release.yml \
+            "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml"
+          cp README.md "$KEEP_ROOT/README.md"
+          cp .high-sierra/README.md "$KEEP_ROOT/.high-sierra/README.md"
+
+          git read-tree --reset -u "$UPSTREAM_COMMIT"
+
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml" \
+            .github/workflows/macos-high-sierra.yml
+          cp "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml" \
+            .github/workflows/sync-upstream-release.yml
+
+          cp "$KEEP_ROOT/README.md" README.md
+
+          rm -rf .high-sierra
+          mkdir -p .high-sierra
+          cp "$KEEP_ROOT/.high-sierra/README.md" .high-sierra/README.md
+          printf '%s\n' "$TAG" > .high-sierra/last-synced-release.txt
+          printf '%s\n' "$UPSTREAM_COMMIT" > .high-sierra/source-base.txt
+          printf '%s\n' "official-release" > .high-sierra/source-kind.txt
+
+          APP_VERSION="$(
+            python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("app/pubspec.yaml").read_text()
+          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
+          if not match:
+              raise SystemExit("ERROR: app version not found in upstream release.")
+          print(match.group(1))
+          PY
+          )"
+
+          APP_RELEASE_VERSION="${APP_VERSION%%+*}"
+          if [ "v${APP_RELEASE_VERSION}" != "$TAG" ]; then
+            echo "ERROR: official tag $TAG does not match app version $APP_VERSION."
+            exit 1
+          fi
+
+          git add -A
+
+          EXPECTED_WORKFLOWS=$'macos-high-sierra.yml\nsync-upstream-release.yml'
+          ACTUAL_WORKFLOWS="$(
+            find .github/workflows \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
+              | LC_ALL=C sort
+          )"
+
+          if [ "$ACTUAL_WORKFLOWS" != "$EXPECTED_WORKFLOWS" ]; then
+            echo "ERROR: unexpected workflow set after upstream synchronization:"
+            printf '%s\n' "$ACTUAL_WORKFLOWS"
+            exit 1
+          fi
+
+          git diff --cached --check
+
+          TREE="$(git write-tree)"
+          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
+
+          export GIT_AUTHOR_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
+          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
+            NEW_COMMIT="$(
+              printf '%s\n' "$MESSAGE" \
+                | git commit-tree "$TREE" -p "$PARENT"
+            )"
+          else
+            NEW_COMMIT="$(
+              printf '%s\n' "$MESSAGE" \
+                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
+            )"
+          fi
+
+          git reset --hard "$NEW_COMMIT"
+          git push origin "$NEW_COMMIT:refs/heads/main"
+
+      - name: Start High Sierra backport build and release
+        if: steps.release.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euxo pipefail
+
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run macos-high-sierra.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f native_assets_strategy=native-backport \
+              -f upstream_tag="$TAG" \
+              -f publish_release=true; then
+              exit 0
+            fi
+
+            echo "Workflow dispatch attempt $attempt failed; retrying."
+            sleep 5
+          done
+
+          echo "ERROR: failed to dispatch High Sierra backport workflow."
+          exit 1

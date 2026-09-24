@@ -11,12 +11,22 @@ on:
         options:
           - "native-backport"
           - "legacy-path-provider"
+      upstream_tag:
+        description: "Official LocalSend release tag associated with this build (for example v1.19.0)"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Publish or update the High Sierra GitHub Release after all validation passes"
+        required: true
+        default: false
+        type: boolean
   push:
     branches:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   FLUTTER_VERSION: "3.41.9"
@@ -24,6 +34,8 @@ env:
   LEGACY_MACOS_TARGET: "10.13"
   MACOSX_DEPLOYMENT_TARGET: "10.13"
   NATIVE_ASSETS_STRATEGY: ${{ inputs.native_assets_strategy || 'native-backport' }}
+  REQUESTED_UPSTREAM_TAG: ${{ inputs.upstream_tag || '' }}
+  PUBLISH_RELEASE: ${{ inputs.publish_release || false }}
 
 jobs:
   build:
@@ -35,6 +47,69 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Resolve High Sierra build metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          MARKER=".high-sierra/last-synced-release.txt"
+          SOURCE_KIND_FILE=".high-sierra/source-kind.txt"
+
+          test -s "$MARKER"
+          test -s "$SOURCE_KIND_FILE"
+
+          UPSTREAM_RELEASE_TAG="$(tr -d '\r\n' < "$MARKER")"
+          HIGH_SIERRA_SOURCE_KIND="$(tr -d '\r\n' < "$SOURCE_KIND_FILE")"
+
+          APP_VERSION="$(
+            python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("app/pubspec.yaml").read_text()
+          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
+          if not match:
+              raise SystemExit("ERROR: app version not found in app/pubspec.yaml")
+          print(match.group(1))
+          PY
+          )"
+
+          APP_RELEASE_VERSION="${APP_VERSION%%+*}"
+          EXPECTED_TAG="v${APP_RELEASE_VERSION}"
+
+          if [ "$UPSTREAM_RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "ERROR: source marker $UPSTREAM_RELEASE_TAG does not match app version $APP_VERSION."
+            exit 1
+          fi
+
+          if [ -n "${REQUESTED_UPSTREAM_TAG:-}" ] && [ "$REQUESTED_UPSTREAM_TAG" != "$UPSTREAM_RELEASE_TAG" ]; then
+            echo "ERROR: requested upstream tag $REQUESTED_UPSTREAM_TAG does not match source marker $UPSTREAM_RELEASE_TAG."
+            exit 1
+          fi
+
+          if [ "${PUBLISH_RELEASE}" = "true" ] && [ "$HIGH_SIERRA_SOURCE_KIND" != "official-release" ]; then
+            echo "ERROR: refusing to publish a GitHub Release from source kind '$HIGH_SIERRA_SOURCE_KIND'."
+            echo "Only an exact synchronized official LocalSend release may be published automatically."
+            exit 1
+          fi
+
+          HIGH_SIERRA_RELEASE_TAG="${UPSTREAM_RELEASE_TAG}-high-sierra"
+          HIGH_SIERRA_ASSET_BASENAME="LocalSend-${APP_RELEASE_VERSION}-macOS-High-Sierra-10.13-x86_64"
+
+          {
+            echo "UPSTREAM_RELEASE_TAG=$UPSTREAM_RELEASE_TAG"
+            echo "APP_VERSION=$APP_VERSION"
+            echo "APP_RELEASE_VERSION=$APP_RELEASE_VERSION"
+            echo "HIGH_SIERRA_SOURCE_KIND=$HIGH_SIERRA_SOURCE_KIND"
+            echo "HIGH_SIERRA_RELEASE_TAG=$HIGH_SIERRA_RELEASE_TAG"
+            echo "HIGH_SIERRA_ASSET_BASENAME=$HIGH_SIERRA_ASSET_BASENAME"
+          } >> "$GITHUB_ENV"
+
+          echo "Upstream release tag: $UPSTREAM_RELEASE_TAG"
+          echo "Source kind: $HIGH_SIERRA_SOURCE_KIND"
+          echo "High Sierra release tag: $HIGH_SIERRA_RELEASE_TAG"
+          echo "Release asset basename: $HIGH_SIERRA_ASSET_BASENAME"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -4289,10 +4364,17 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p release
-          OUTPUT="release/LocalSend-macOS-High-Sierra-10.13-x86_64.zip"
-          rm -f "$OUTPUT"
+          OUTPUT="release/${HIGH_SIERRA_ASSET_BASENAME}.zip"
+          CHECKSUM="${OUTPUT}.sha256"
+          rm -f "$OUTPUT" "$CHECKSUM"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT"
-          ls -lh "$OUTPUT"
+          (
+            cd release
+            shasum -a 256 "${HIGH_SIERRA_ASSET_BASENAME}.zip" \
+              > "${HIGH_SIERRA_ASSET_BASENAME}.zip.sha256"
+          )
+          ls -lh "$OUTPUT" "$CHECKSUM"
+          cat "$CHECKSUM"
 
       - name: Upload High Sierra build
         id: upload_build
@@ -4300,7 +4382,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LocalSend-macOS-High-Sierra-10.13-x86_64
-          path: app/release/LocalSend-macOS-High-Sierra-10.13-x86_64.zip
+          path: |
+            app/release/LocalSend-*-macOS-High-Sierra-10.13-x86_64.zip
+            app/release/LocalSend-*-macOS-High-Sierra-10.13-x86_64.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -4310,9 +4394,64 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LocalSend-macOS-High-Sierra-10.13-x86_64-retry
-          path: app/release/LocalSend-macOS-High-Sierra-10.13-x86_64.zip
+          path: |
+            app/release/LocalSend-*-macOS-High-Sierra-10.13-x86_64.zip
+            app/release/LocalSend-*-macOS-High-Sierra-10.13-x86_64.zip.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish High Sierra GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+
+          if [ "$HIGH_SIERRA_SOURCE_KIND" != "official-release" ]; then
+            echo "ERROR: refusing to publish non-release source kind: $HIGH_SIERRA_SOURCE_KIND"
+            exit 1
+          fi
+
+          ZIP="app/release/${HIGH_SIERRA_ASSET_BASENAME}.zip"
+          CHECKSUM="${ZIP}.sha256"
+          test -f "$ZIP"
+          test -f "$CHECKSUM"
+
+          NOTES="$(mktemp)"
+          cat > "$NOTES" <<EOF
+          Unofficial High Sierra backport of LocalSend ${UPSTREAM_RELEASE_TAG}.
+
+          Target:
+          - macOS 10.13.6 High Sierra
+          - Intel x86_64 only
+
+          This build is produced only after the fail-closed High Sierra compatibility checks in this repository pass. It is not an official LocalSend release.
+
+          Upstream release:
+          https://github.com/localsend/localsend/releases/tag/${UPSTREAM_RELEASE_TAG}
+          EOF
+
+          if gh release view "$HIGH_SIERRA_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+
+            gh release edit "$HIGH_SIERRA_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "LocalSend ${UPSTREAM_RELEASE_TAG} for macOS High Sierra" \
+              --notes-file "$NOTES"
+
+            gh release upload "$HIGH_SIERRA_RELEASE_TAG" \
+              "$ZIP" "$CHECKSUM" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$HIGH_SIERRA_RELEASE_TAG" \
+              "$ZIP" "$CHECKSUM" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "LocalSend ${UPSTREAM_RELEASE_TAG} for macOS High Sierra" \
+              --notes-file "$NOTES"
+          fi
 
       - name: Collect diagnostics
         if: always()
