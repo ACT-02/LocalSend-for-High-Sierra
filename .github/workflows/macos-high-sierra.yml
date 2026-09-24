@@ -24,6 +24,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/macos-high-sierra.yml"
 
 permissions:
   contents: write
