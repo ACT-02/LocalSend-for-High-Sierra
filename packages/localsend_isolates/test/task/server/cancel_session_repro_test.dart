@@ -53,23 +53,7 @@ void main() {
       fingerprint: 'RECEIVER-FINGERPRINT',
       pin: null,
       verifyChecksums: true,
-      web: const WebParams(
-        mode: WebMode.disabled(),
-        i18N: WebI18n(
-          waiting: '',
-          enterPin: '',
-          invalidPin: '',
-          tooManyAttempts: '',
-          rejected: '',
-          uploadRejected: '',
-          busy: '',
-          files: '',
-          fileName: '',
-          size: '',
-          dropHint: '',
-        ),
-        pages: WebPages(),
-      ),
+      web: null,
       showToken: null,
     );
 

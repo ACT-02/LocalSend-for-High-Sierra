@@ -2,7 +2,6 @@
 
 use localsend::http::server::internal::{InternalConfig, InternalEvent};
 use localsend::http::server::start_with_port;
-use localsend::http::server::web::WebConfig;
 use localsend::http::state::ClientInfo;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -48,7 +47,7 @@ async fn start_test_server(internal_enabled: bool) -> TestServer {
         },
         internal_config,
         None,
-        WebConfig::default(),
+        None,
         stop_rx,
     )
     .await

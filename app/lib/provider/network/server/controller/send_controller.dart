@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:localsend_app/model/cross_file.dart';
-import 'package:localsend_app/model/state/send/web/web_download_file.dart';
-import 'package:localsend_app/model/state/send/web/web_download_session.dart';
-import 'package:localsend_app/model/state/send/web/web_download_state.dart';
+import 'package:localsend_app/model/state/send/web/web_send_file.dart';
+import 'package:localsend_app/model/state/send/web/web_send_session.dart';
+import 'package:localsend_app/model/state/send/web/web_send_state.dart';
 import 'package:localsend_app/provider/network/server/server_utils.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/native/directories.dart';
@@ -19,9 +19,9 @@ import 'package:uuid/uuid.dart';
 
 const _uuid = Uuid();
 
-final _logger = Logger('WebDownloadController');
+final _logger = Logger('WebSendController');
 
-/// Handles all server events for web download (sending files to web browsers).
+/// Handles all server events for web send (sending files to web browsers).
 /// The web page and the downloads themselves are served by the Rust server
 /// which emits the events handled here.
 class SendController {
@@ -29,13 +29,13 @@ class SendController {
 
   SendController(this.server);
 
-  /// Builds the [WebDownloadState] for the given [files].
+  /// Builds the [WebSendState] for the given [files].
   /// Files that only exist in memory (e.g. text messages) are materialized
   /// to the cache directory so the Rust server can stream them.
-  Future<WebDownloadState> buildWebDownloadState({required List<CrossFile> files}) async {
-    final currentWebDownloadState = server.getStateOrNull()?.webDownloadState;
+  Future<WebSendState> buildWebSendState({required List<CrossFile> files}) async {
+    final currentWebSendState = server.getStateOrNull()?.webSendState;
 
-    return WebDownloadState(
+    return WebSendState(
       sessions: {},
       files: Map.fromEntries(
         await Future.wait(
@@ -46,14 +46,14 @@ class SendController {
             if (path == null && file.bytes != null) {
               // The Rust server streams file content from disk, so in-memory
               // bytes (text messages, clipboard content) are written to a temp file.
-              final tempPath = p.join(await getCacheDirectory(), 'web-download-$id');
+              final tempPath = p.join(await getCacheDirectory(), 'web-send-$id');
               await File(tempPath).writeAsBytes(file.bytes!);
               path = tempPath;
             }
 
             return MapEntry(
               id,
-              WebDownloadFile(
+              WebSendFile(
                 file: FileDto(
                   id: id,
                   fileName: file.name,
@@ -78,7 +78,7 @@ class SendController {
           }),
         ),
       ),
-      autoAccept: currentWebDownloadState?.autoAccept ?? server.ref.read(settingsProvider).shareViaLinkAutoAccept,
+      autoAccept: currentWebSendState?.autoAccept ?? server.ref.read(settingsProvider).shareViaLinkAutoAccept,
     );
   }
 
@@ -86,19 +86,19 @@ class SendController {
   /// The Rust server already checked the PIN and handles repeated visits of
   /// accepted sessions itself.
   void onPrepareDownload(HttpServerWebPrepareDownloadEvent event) {
-    final webDownloadState = server.getStateOrNull()?.webDownloadState;
-    if (webDownloadState == null) {
-      // should not happen: web download events are only emitted when web download was configured
+    final webSendState = server.getStateOrNull()?.webSendState;
+    if (webSendState == null) {
+      // should not happen: web send events are only emitted when web send was configured
       server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerPrepareDownloadDecisionAction(sessionId: event.sessionId, accept: false));
       return;
     }
 
     server.setState(
-      (oldState) => oldState!.updateWebDownloadState(
-        (webDownload) => webDownload.copyWith(
+      (oldState) => oldState!.copyWith(
+        webSendState: oldState.webSendState!.copyWith(
           sessions: {
-            ...webDownload.sessions,
-            event.sessionId: WebDownloadSession(
+            ...oldState.webSendState!.sessions,
+            event.sessionId: WebSendSession(
               sessionId: event.sessionId,
               pending: true,
               ip: event.ip,
@@ -109,7 +109,7 @@ class SendController {
       ),
     );
 
-    if (webDownloadState.autoAccept) {
+    if (webSendState.autoAccept) {
       acceptRequest(event.sessionId);
     }
   }
@@ -121,10 +121,10 @@ class SendController {
     final String? filePath;
     final int? fileDescriptor;
     try {
-      final path = server.getStateOrNull()?.webDownloadState?.files[event.fileId]?.path;
+      final path = server.getStateOrNull()?.webSendState?.files[event.fileId]?.path;
       if (path == null) {
         // should not happen: the Rust server only emits events for offered files
-        throw StateError('No path for web download file ${event.fileId}');
+        throw StateError('No path for web send file ${event.fileId}');
       }
 
       if (path.startsWith('content://')) {
@@ -135,7 +135,7 @@ class SendController {
         fileDescriptor = null;
       }
     } catch (e, st) {
-      _logger.severe('Failed to resolve source for web download file ${event.fileId}', e, st);
+      _logger.severe('Failed to resolve source for web send file ${event.fileId}', e, st);
       // Unblock the web client's request waiting for the content source.
       server.ref.redux(parentIsolateProvider).dispatch(IsolateHttpServerFailFileDownloadAction(sessionId: event.sessionId, fileId: event.fileId));
       return;
@@ -154,14 +154,14 @@ class SendController {
   }
 
   void acceptRequest(String sessionId) {
-    final session = server.getStateOrNull()?.webDownloadState?.sessions[sessionId];
+    final session = server.getStateOrNull()?.webSendState?.sessions[sessionId];
     if (session == null || !session.pending) {
       return;
     }
 
     server.setState(
-      (oldState) => oldState!.updateWebDownloadState(
-        (webDownload) => webDownload.updateSession(
+      (oldState) => oldState!.copyWith(
+        webSendState: oldState.webSendState!.updateSession(
           sessionId: sessionId,
           update: (oldSession) => oldSession.copyWith(pending: false),
         ),
@@ -172,16 +172,16 @@ class SendController {
   }
 
   void declineRequest(String sessionId) {
-    final session = server.getStateOrNull()?.webDownloadState?.sessions[sessionId];
+    final session = server.getStateOrNull()?.webSendState?.sessions[sessionId];
     if (session == null || !session.pending) {
       return;
     }
 
     server.setState(
-      (oldState) => oldState!.updateWebDownloadState(
-        (webDownload) => webDownload.copyWith(
+      (oldState) => oldState!.copyWith(
+        webSendState: oldState.webSendState!.copyWith(
           sessions: {
-            for (final entry in webDownload.sessions.entries)
+            for (final entry in oldState.webSendState!.sessions.entries)
               if (entry.key != sessionId) entry.key: entry.value, // remove session
           },
         ),
@@ -212,10 +212,10 @@ String parseDeviceInfoFromUserAgent(String? userAgent) {
   }
 }
 
-extension on WebDownloadState {
-  WebDownloadState updateSession({
+extension on WebSendState {
+  WebSendState updateSession({
     required String sessionId,
-    required WebDownloadSession Function(WebDownloadSession oldSession) update,
+    required WebSendSession Function(WebSendSession oldSession) update,
   }) {
     return copyWith(
       sessions: {...sessions}

@@ -22,10 +22,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
-/// Events emitted by the web download (download API) endpoints that must be handled
-/// by the application. Web download can be enabled independently of the v2 endpoints.
+/// Events emitted by the web send (download API) endpoints that must be handled
+/// by the application. Web send can be enabled independently of the v2 endpoints.
 #[derive(Debug)]
-pub enum WebDownloadEvent {
+pub enum WebSendEvent {
     /// A web client requests to download the shared files
     /// via `POST /api/localsend/v2/prepare-download`.
     ///
@@ -84,11 +84,16 @@ const FILE_NAME_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'(')
     .remove(b')');
 
-/// Configuration for the pages served to browsers.
-#[derive(Default)]
+/// Configuration for the web pages served to browsers.
 pub struct WebConfig {
-    /// What is served at `/` and which browser-facing API is active.
-    pub mode: WebMode,
+    /// Enables web send (the download page): files offered for download by web browsers.
+    /// `None` disables the download page and the download API.
+    pub send: Option<WebSendConfig>,
+
+    /// Serves the upload page so web browsers can upload files
+    /// via the v2 `prepare-upload`/`upload` endpoints.
+    /// Ignored when [`WebConfig::send`] is set: the download page takes precedence at `/`.
+    pub upload: bool,
 
     /// Translations for the web pages, served via `/i18n.json`.
     pub i18n: WebI18n,
@@ -98,25 +103,6 @@ pub struct WebConfig {
     pub pages: WebPages,
 }
 
-/// What is served at `/` and which browser-facing API is active.
-/// The modes are mutually exclusive: only one page can live at `/`.
-#[derive(Default)]
-pub enum WebMode {
-    /// No web share active: `/` serves the 403 page and client certificates
-    /// are mandatory under TLS, so the 403 page is effectively only reachable
-    /// when encryption is off.
-    #[default]
-    Disabled,
-
-    /// Web download: the download page and the download API,
-    /// offering the configured files for download by web browsers.
-    Download(WebDownloadConfig),
-
-    /// The upload page: web browsers upload files
-    /// via the v2 `prepare-upload`/`upload` endpoints.
-    Upload,
-}
-
 /// The HTML pages served to browsers.
 ///
 /// Each page is optional: a `None` page is served from the corresponding
@@ -124,31 +110,31 @@ pub enum WebMode {
 /// they customize.
 #[derive(Clone, Debug, Default)]
 pub struct WebPages {
-    /// The download page served at `/` while web download is active.
+    /// The download page served at `/` while web send is active.
     pub download_html: Option<String>,
 
     /// The upload page served at `/` while the upload page is enabled.
     pub upload_html: Option<String>,
 
-    /// The error page served at `/` in [`WebMode::Disabled`].
+    /// The error page served at `/` when neither page is active.
     pub error_403_html: Option<String>,
 }
 
-/// Configuration for web download (download API): files offered for download by web browsers.
+/// Configuration for web send (download API): files offered for download by web browsers.
 ///
-/// Web download can be enabled independently of the v2/v3 protocol endpoints.
-pub struct WebDownloadConfig {
+/// Web send can be enabled independently of the v2/v3 protocol endpoints.
+pub struct WebSendConfig {
     /// The metadata of the files offered for download, mapped by file ID.
     ///
     /// The content is requested from the application per download
-    /// via [`WebDownloadEvent::FileDownload`].
+    /// via [`WebSendEvent::FileDownload`].
     pub files: HashMap<String, FileDto>,
 
     /// Optional PIN that web clients must provide via the `pin` query parameter.
     pub pin: Option<String>,
 
     /// Channel on which the server emits events that must be handled by the application.
-    pub event_tx: mpsc::Sender<WebDownloadEvent>,
+    pub event_tx: mpsc::Sender<WebSendEvent>,
 }
 
 /// Translations for the web pages, served via `/i18n.json`.
@@ -186,8 +172,8 @@ impl Default for WebI18n {
     }
 }
 
-/// Runtime state of the web download (download API) endpoints.
-pub(crate) struct WebDownloadState {
+/// Runtime state of the web send (download API) endpoints.
+pub(crate) struct WebPageState {
     /// The metadata of the files offered for download, mapped by file ID.
     pub(crate) files: HashMap<String, FileDto>,
 
@@ -195,17 +181,17 @@ pub(crate) struct WebDownloadState {
     pub(crate) pin: Option<String>,
 
     /// Channel on which server events are emitted to the application.
-    pub(crate) event_tx: mpsc::Sender<WebDownloadEvent>,
+    pub(crate) event_tx: mpsc::Sender<WebSendEvent>,
 
     /// Download sessions, keyed by session ID (the client's IP address).
-    pub(crate) sessions: Mutex<HashMap<String, WebDownloadSession>>,
+    pub(crate) sessions: Mutex<HashMap<String, WebSendSession>>,
 
     /// Maps client IPs to the number of failed PIN attempts.
     pub(crate) pin_attempts: Mutex<LruCache<IpAddr, u32>>,
 }
 
-impl WebDownloadState {
-    pub(crate) fn new(config: WebDownloadConfig) -> Self {
+impl WebPageState {
+    pub(crate) fn new(config: WebSendConfig) -> Self {
         Self {
             files: config.files,
             pin: config.pin,
@@ -216,65 +202,8 @@ impl WebDownloadState {
     }
 }
 
-/// Runtime counterpart of [`WebConfig`].
-pub(crate) struct WebState {
-    /// Which web share is active, holding the runtime state for web download.
-    pub(crate) share: WebShare,
-
-    /// Translations for the web pages, served via `/i18n.json`.
-    pub(crate) i18n: WebI18n,
-
-    /// The HTML pages served to browsers, falling back to the embedded assets.
-    pub(crate) pages: WebPages,
-}
-
-impl From<WebConfig> for WebState {
-    fn from(config: WebConfig) -> Self {
-        Self {
-            share: config.mode.into(),
-            i18n: config.i18n,
-            pages: config.pages,
-        }
-    }
-}
-
-/// Which web share is active, mirroring [`WebMode`] with the runtime state
-/// for web download attached.
-pub(crate) enum WebShare {
-    /// No web share active: `/` serves the 403 page.
-    Disabled,
-
-    /// Web download: the download page, with its runtime session state.
-    Download(Arc<WebDownloadState>),
-
-    /// The upload page.
-    Upload,
-}
-
-impl WebShare {
-    /// The web-download runtime state, when web download is active.
-    pub(crate) fn download(&self) -> Option<&Arc<WebDownloadState>> {
-        match self {
-            WebShare::Download(download) => Some(download),
-            WebShare::Disabled | WebShare::Upload => None,
-        }
-    }
-}
-
-impl From<WebMode> for WebShare {
-    fn from(mode: WebMode) -> Self {
-        match mode {
-            WebMode::Disabled => WebShare::Disabled,
-            WebMode::Download(download) => {
-                WebShare::Download(Arc::new(WebDownloadState::new(download)))
-            }
-            WebMode::Upload => WebShare::Upload,
-        }
-    }
-}
-
 /// A download session of a single web client.
-pub(crate) struct WebDownloadSession {
+pub(crate) struct WebSendSession {
     /// The IP address of the web client. Downloads are only allowed from this address.
     ip: PeerIp,
 
@@ -283,26 +212,35 @@ pub(crate) struct WebDownloadSession {
 }
 
 pub(crate) fn index(state: &AppState) -> Response<BoxedBody> {
-    let pages = &state.web.pages;
-    match &state.web.share {
-        WebShare::Download(_) => html_response(
+    let pages = state.web_pages.as_ref();
+    if state.web.is_some() {
+        html_response(
             StatusCode::OK,
             pages.download_html.as_deref().unwrap_or(DOWNLOAD_HTML),
             "text/html; charset=utf-8",
-        ),
-        WebShare::Upload => html_response(
+        )
+    } else if state.web_upload {
+        html_response(
             StatusCode::OK,
             pages.upload_html.as_deref().unwrap_or(UPLOAD_HTML),
             "text/html; charset=utf-8",
-        ),
-        WebShare::Disabled => error_403_page(pages),
+        )
+    } else {
+        error_403_page(pages)
     }
 }
 
 pub(crate) fn i18n(state: &AppState) -> Result<Response<BoxedBody>, AppError> {
+    let Some(i18n) = &state.web_i18n else {
+        return Err(AppError::Message(
+            StatusCode::FORBIDDEN,
+            "Web pages not initialized.".to_string(),
+        ));
+    };
+
     Ok(JsonResponse {
         status: StatusCode::OK,
-        body: &state.web.i18n,
+        body: i18n.as_ref(),
     }
     .into_response())
 }
@@ -347,7 +285,7 @@ pub(crate) async fn prepare_download(
         let mut sessions = web.sessions.lock().await;
         sessions.insert(
             session_id.clone(),
-            WebDownloadSession {
+            WebSendSession {
                 ip: client_info.ip,
                 accepted: false,
             },
@@ -359,7 +297,7 @@ pub(crate) async fn prepare_download(
     let mut pending_guard = PendingWebSessionGuard::new(web.clone(), session_id.clone());
 
     let (decision_tx, decision_rx) = oneshot::channel();
-    let event = WebDownloadEvent::PrepareDownload {
+    let event = WebSendEvent::PrepareDownload {
         ip: client_info.ip,
         session_id: session_id.clone(),
         user_agent,
@@ -432,7 +370,7 @@ pub(crate) async fn download(
 
     // The application provides the file content as a stream of bytes.
     let (content_tx, content_rx) = oneshot::channel::<FileContent>();
-    let event = WebDownloadEvent::FileDownload {
+    let event = WebSendEvent::FileDownload {
         session_id: session_id.clone(),
         file_id: file_id.clone(),
         file: file.clone(),
@@ -469,10 +407,10 @@ pub(crate) async fn download(
     Ok(response)
 }
 
-fn require_web(state: &AppState) -> Result<Arc<WebDownloadState>, AppError> {
-    state.web.share.download().cloned().ok_or(AppError::Message(
+fn require_web(state: &AppState) -> Result<Arc<WebPageState>, AppError> {
+    state.web.clone().ok_or(AppError::Message(
         StatusCode::FORBIDDEN,
-        "Web download not initialized.".to_string(),
+        "Web send not initialized.".to_string(),
     ))
 }
 
@@ -500,7 +438,7 @@ fn error_403_page(pages: &WebPages) -> Response<BoxedBody> {
 
 async fn file_list_response(
     state: &AppState,
-    web: &WebDownloadState,
+    web: &WebPageState,
     session_id: String,
 ) -> Response<BoxedBody> {
     let info = state.info.lock().await.clone();
@@ -536,13 +474,13 @@ fn receiver_stream_body(binary_rx: mpsc::Receiver<Bytes>) -> BoxedBody {
 /// when the request future is cancelled (e.g. the web client disconnected
 /// while the application was still deciding).
 struct PendingWebSessionGuard {
-    web: Arc<WebDownloadState>,
+    web: Arc<WebPageState>,
     session_id: String,
     armed: bool,
 }
 
 impl PendingWebSessionGuard {
-    fn new(web: Arc<WebDownloadState>, session_id: String) -> Self {
+    fn new(web: Arc<WebPageState>, session_id: String) -> Self {
         Self {
             web,
             session_id,
@@ -575,7 +513,7 @@ impl Drop for PendingWebSessionGuard {
     }
 }
 
-async fn clear_pending_session(web: &WebDownloadState, session_id: &str) {
+async fn clear_pending_session(web: &WebPageState, session_id: &str) {
     let mut sessions = web.sessions.lock().await;
     if sessions
         .get(session_id)

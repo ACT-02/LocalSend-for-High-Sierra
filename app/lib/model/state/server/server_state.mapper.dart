@@ -16,7 +16,7 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     if (_instance == null) {
       MapperContainer.globals.use(_instance = ServerStateMapper._());
       ReceiveSessionStateMapper.ensureInitialized();
-      WebShareStateMapper.ensureInitialized();
+      WebSendStateMapper.ensureInitialized();
     }
     return _instance!;
   }
@@ -35,8 +35,18 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     'session',
     _$session,
   );
-  static WebShareState? _$web(ServerState v) => v.web;
-  static const Field<ServerState, WebShareState> _f$web = Field('web', _$web);
+  static WebSendState? _$webSendState(ServerState v) => v.webSendState;
+  static const Field<ServerState, WebSendState> _f$webSendState = Field(
+    'webSendState',
+    _$webSendState,
+  );
+  static bool _$webUpload(ServerState v) => v.webUpload;
+  static const Field<ServerState, bool> _f$webUpload = Field(
+    'webUpload',
+    _$webUpload,
+  );
+  static String? _$webPin(ServerState v) => v.webPin;
+  static const Field<ServerState, String> _f$webPin = Field('webPin', _$webPin);
 
   @override
   final MappableFields<ServerState> fields = const {
@@ -44,7 +54,9 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     #port: _f$port,
     #https: _f$https,
     #session: _f$session,
-    #web: _f$web,
+    #webSendState: _f$webSendState,
+    #webUpload: _f$webUpload,
+    #webPin: _f$webPin,
   };
 
   static ServerState _instantiate(DecodingData data) {
@@ -53,7 +65,9 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
       port: data.dec(_f$port),
       https: data.dec(_f$https),
       session: data.dec(_f$session),
-      web: data.dec(_f$web),
+      webSendState: data.dec(_f$webSendState),
+      webUpload: data.dec(_f$webUpload),
+      webPin: data.dec(_f$webPin),
     );
   }
 
@@ -119,13 +133,15 @@ abstract class ServerStateCopyWith<$R, $In extends ServerState, $Out>
     implements ClassCopyWith<$R, $In, $Out> {
   ReceiveSessionStateCopyWith<$R, ReceiveSessionState, ReceiveSessionState>?
   get session;
-  WebShareStateCopyWith<$R, WebShareState, WebShareState>? get web;
+  WebSendStateCopyWith<$R, WebSendState, WebSendState>? get webSendState;
   $R call({
     String? alias,
     int? port,
     bool? https,
     ReceiveSessionState? session,
-    WebShareState? web,
+    WebSendState? webSendState,
+    bool? webUpload,
+    String? webPin,
   });
   ServerStateCopyWith<$R2, $In, $Out2> $chain<$R2, $Out2>(Then<$Out2, $R2> t);
 }
@@ -142,22 +158,26 @@ class _ServerStateCopyWithImpl<$R, $Out>
   ReceiveSessionStateCopyWith<$R, ReceiveSessionState, ReceiveSessionState>?
   get session => $value.session?.copyWith.$chain((v) => call(session: v));
   @override
-  WebShareStateCopyWith<$R, WebShareState, WebShareState>? get web =>
-      $value.web?.copyWith.$chain((v) => call(web: v));
+  WebSendStateCopyWith<$R, WebSendState, WebSendState>? get webSendState =>
+      $value.webSendState?.copyWith.$chain((v) => call(webSendState: v));
   @override
   $R call({
     String? alias,
     int? port,
     bool? https,
     Object? session = $none,
-    Object? web = $none,
+    Object? webSendState = $none,
+    bool? webUpload,
+    Object? webPin = $none,
   }) => $apply(
     FieldCopyWithData({
       if (alias != null) #alias: alias,
       if (port != null) #port: port,
       if (https != null) #https: https,
       if (session != $none) #session: session,
-      if (web != $none) #web: web,
+      if (webSendState != $none) #webSendState: webSendState,
+      if (webUpload != null) #webUpload: webUpload,
+      if (webPin != $none) #webPin: webPin,
     }),
   );
   @override
@@ -166,7 +186,9 @@ class _ServerStateCopyWithImpl<$R, $Out>
     port: data.get(#port, or: $value.port),
     https: data.get(#https, or: $value.https),
     session: data.get(#session, or: $value.session),
-    web: data.get(#web, or: $value.web),
+    webSendState: data.get(#webSendState, or: $value.webSendState),
+    webUpload: data.get(#webUpload, or: $value.webUpload),
+    webPin: data.get(#webPin, or: $value.webPin),
   );
 
   @override

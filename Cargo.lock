@@ -2244,7 +2244,6 @@ dependencies = [
  "toml",
  "unicode-width",
  "uuid",
- "walkdir",
  "winresource",
 ]
 

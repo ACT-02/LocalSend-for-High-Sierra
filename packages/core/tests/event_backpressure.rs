@@ -13,7 +13,6 @@ use localsend::discovery::{self, DeviceIdentity, DiscoveryConfig, DiscoveryEvent
 use localsend::http::client::LsHttpClientV2;
 use localsend::http::dto_v2::RegisterDtoV2;
 use localsend::http::server::v2::ServerEventV2;
-use localsend::http::server::web::WebConfig;
 use localsend::http::server::{start_with_port, ServerConfigV2};
 use localsend::http::state::ClientInfo;
 use localsend::model::discovery::{DeviceType, ProtocolType, PROTOCOL_VERSION_V2};
@@ -66,7 +65,7 @@ async fn start_server_with_stalled_events(
             verify_checksums: true,
             event_tx,
         }),
-        WebConfig::default(),
+        None,
         stop_rx,
     )
     .await
