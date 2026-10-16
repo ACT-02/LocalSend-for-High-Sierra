@@ -96,7 +96,7 @@ jobs:
             exit 1
           fi
 
-          HIGH_SIERRA_RELEASE_TAG="${UPSTREAM_RELEASE_TAG}-high-sierra"
+          HIGH_SIERRA_RELEASE_TAG="${UPSTREAM_RELEASE_TAG}"
           HIGH_SIERRA_ASSET_BASENAME="LocalSend-${APP_RELEASE_VERSION}-macOS-High-Sierra-10.13-x86_64"
 
           {
@@ -4403,7 +4403,7 @@ jobs:
           retention-days: 30
 
       - name: Publish High Sierra GitHub Release
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_release) || (github.event_name == 'push' && github.event.head_commit.message == 'Publish current High Sierra release') }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
