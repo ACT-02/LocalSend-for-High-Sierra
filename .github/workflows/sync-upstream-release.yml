@@ -182,7 +182,7 @@ jobs:
           sed -i.bak 's/^targets[[:space:]]*=.*/targets = ["x86_64-apple-darwin"]/' "$RUST_TOOLCHAIN"
           rm -f "$RUST_TOOLCHAIN.bak"
 
-          if ! grep -q '^targets = ["x86_64-apple-darwin"]$' "$RUST_TOOLCHAIN"; then
+          if ! grep -Fq 'targets = ["x86_64-apple-darwin"]' "$RUST_TOOLCHAIN"; then
             echo "ERROR: failed to restrict Rust targets to x86_64-apple-darwin."
             exit 1
           fi
