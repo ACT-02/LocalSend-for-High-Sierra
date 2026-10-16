@@ -58,37 +58,28 @@ jobs:
             RELEASE_URL="$API_ROOT/releases/latest"
           fi
 
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
+          curl --fail --silent --show-error --location \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$RELEASE_URL" \
-            > "$RUNNER_TEMP/localsend-release.json"
+            "$RELEASE_URL" > "$RUNNER_TEMP/localsend-release.json"
 
-          TAG="$(
-            python3 - "$RUNNER_TEMP/localsend-release.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
+          TAG="$(awk -F'"' '/"tag_name"/ {print $4; exit}' "$RUNNER_TEMP/localsend-release.json")"
+          DRAFT="$(awk -F': ' '/"draft"/ {gsub(/[, ]/,"",$2); print $2; exit}' "$RUNNER_TEMP/localsend-release.json")"
+          PRERELEASE="$(awk -F': ' '/"prerelease"/ {gsub(/[, ]/,"",$2); print $2; exit}' "$RUNNER_TEMP/localsend-release.json")"
 
-          data = json.loads(Path(sys.argv[1]).read_text())
-
-          if data.get("draft"):
-              raise SystemExit("ERROR: refusing to synchronize a draft release.")
-          if data.get("prerelease"):
-              raise SystemExit("ERROR: refusing to synchronize a prerelease.")
-
-          tag = data.get("tag_name")
-          if not isinstance(tag, str) or not tag:
-              raise SystemExit("ERROR: official release has no tag_name.")
-
-          print(tag)
-          PY
-          )"
+          if [ -z "$TAG" ]; then
+            echo "ERROR: official release has no tag_name."
+            exit 1
+          fi
+          if [ "$DRAFT" = "true" ]; then
+            echo "ERROR: refusing to synchronize a draft release."
+            exit 1
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "ERROR: refusing to synchronize a prerelease."
+            exit 1
+          fi
 
           CURRENT=""
           if [ -s .high-sierra/last-synced-release.txt ]; then
@@ -118,17 +109,10 @@ jobs:
 
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/localsend/localsend.git
-
-          git fetch \
-            --force \
-            --no-tags \
-            upstream \
+          git fetch --force --no-tags upstream \
             "refs/tags/${TAG}:refs/tags/__localsend_release"
 
-          UPSTREAM_COMMIT="$(
-            git rev-parse "refs/tags/__localsend_release^{commit}"
-          )"
-
+          UPSTREAM_COMMIT="$(git rev-parse "refs/tags/__localsend_release^{commit}")"
           echo "Official release commit: $UPSTREAM_COMMIT"
           echo "commit=$UPSTREAM_COMMIT" >> "$GITHUB_OUTPUT"
 
@@ -147,10 +131,8 @@ jobs:
           rm -rf "$KEEP_ROOT"
           mkdir -p "$KEEP_ROOT/.github/workflows" "$KEEP_ROOT/.high-sierra"
 
-          cp .github/workflows/macos-high-sierra.yml \
-            "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml"
-          cp .github/workflows/sync-upstream-release.yml \
-            "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml"
+          cp .github/workflows/macos-high-sierra.yml "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml"
+          cp .github/workflows/sync-upstream-release.yml "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml"
           cp README.md "$KEEP_ROOT/README.md"
           cp .high-sierra/README.md "$KEEP_ROOT/.high-sierra/README.md"
 
@@ -158,11 +140,8 @@ jobs:
 
           rm -rf .github/workflows
           mkdir -p .github/workflows
-          cp "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml" \
-            .github/workflows/macos-high-sierra.yml
-          cp "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml" \
-            .github/workflows/sync-upstream-release.yml
-
+          cp "$KEEP_ROOT/.github/workflows/macos-high-sierra.yml" .github/workflows/macos-high-sierra.yml
+          cp "$KEEP_ROOT/.github/workflows/sync-upstream-release.yml" .github/workflows/sync-upstream-release.yml
           cp "$KEEP_ROOT/README.md" README.md
 
           rm -rf .high-sierra
@@ -172,77 +151,39 @@ jobs:
           printf '%s\n' "$UPSTREAM_COMMIT" > .high-sierra/source-base.txt
           printf '%s\n' "official-release" > .high-sierra/source-kind.txt
 
-          # High Sierra is the only supported target. Keep only files that can
-          # participate in the macOS 10.13 Intel build and its backport.
-          rm -rf \
-            app/android \
-            app/ios \
-            app/linux \
-            app/windows \
-            app/web \
-            cli \
-            server \
-            fastlane \
-            support
+          # High Sierra is the only supported target.
+          rm -rf app/android app/ios app/linux app/windows app/web cli server fastlane support
 
-          rm -f \
-            .gitmodules \
+          rm -f .gitmodules \
             .github/release-drafter.yml \
-            AGENTS.md \
-            CLAUDE.md \
-            CODE_SIGNING.md \
-            CONTRIBUTING.md \
-            CHANGELOG.md \
-            app/.mcp.json \
-            app/macos/Podfile.lock \
-            app/assets/packaging/logo.ico
+            AGENTS.md CLAUDE.md CODE_SIGNING.md CONTRIBUTING.md CHANGELOG.md \
+            app/.mcp.json app/macos/Podfile.lock app/assets/packaging/logo.ico
 
           find app/assets/i18n -type f \
             \( -name '_missing_translations_*.json' -o -name '_unused_translations.json' \) \
             -delete
 
-          python3 <<'PY'
-          import re
-          from pathlib import Path
+          # Remove the deleted Cargo workspace members.
+          if [ -f Cargo.toml ]; then
+            sed -i.bak '/^[[:space:]]*"cli",[[:space:]]*$/d; /^[[:space:]]*"server",[[:space:]]*$/d' Cargo.toml
+            rm -f Cargo.toml.bak
+          fi
 
-          cargo = Path("Cargo.toml")
-          text = cargo.read_text()
+          # The isolate Rust crate only needs the Intel macOS target.
+          RUST_TOOLCHAIN="packages/localsend_isolates/rust-toolchain.toml"
+          if [ ! -f "$RUST_TOOLCHAIN" ]; then
+            echo "ERROR: missing $RUST_TOOLCHAIN after upstream synchronization."
+            exit 1
+          fi
+          sed -i.bak 's/^targets[[:space:]]*=.*/targets = ["x86_64-apple-darwin"]/' "$RUST_TOOLCHAIN"
+          rm -f "$RUST_TOOLCHAIN.bak"
 
-          workspace = re.search(
-              r'(?ms)^\\[workspace\\]\\n(.*?)(?=^\\[[^\\[]|\\Z)',
-              text,
-          )
-          if not workspace:
-              raise SystemExit("ERROR: Cargo.toml has no recognizable [workspace] section.")
+          if ! grep -q '^targets = ["x86_64-apple-darwin"]$' "$RUST_TOOLCHAIN"; then
+            echo "ERROR: failed to restrict Rust targets to x86_64-apple-darwin."
+            exit 1
+          fi
 
-          block = workspace.group(1)
-          for member in ("cli", "server"):
-              line = f'    "{member}",\\n'
-              count = block.count(line)
-              if count > 1:
-                  raise SystemExit(
-                      f"ERROR: Cargo workspace member {member!r} appears {count} times."
-                  )
-              if count == 1:
-                  block = block.replace(line, "", 1)
-
-          text = text[:workspace.start(1)] + block + text[workspace.end(1):]
-          cargo.write_text(text)
-
-          rust_toolchain = Path("packages/localsend_isolates/rust-toolchain.toml")
-          text = rust_toolchain.read_text()
-          match = re.search(r'(?m)^targets\\s*=\\s*\\[[^\\]]*\\]\\s*            python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          text = Path("app/pubspec.yaml").read_text()
-          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
-          if not match:
-              raise SystemExit("ERROR: app version not found in upstream release.")
-          print(match.group(1))
-          PY
-          )"
-
+          APP_VERSION="$(awk '/^version:[[:space:]]/ {print $2; exit}' app/pubspec.yaml)"
           APP_RELEASE_VERSION="${APP_VERSION%%+*}"
           if [ "v${APP_RELEASE_VERSION}" != "$TAG" ]; then
             echo "ERROR: official tag $TAG does not match app version $APP_VERSION."
@@ -252,14 +193,7 @@ jobs:
           git add -A
 
           EXPECTED_WORKFLOWS=$'macos-high-sierra.yml\nsync-upstream-release.yml'
-          ACTUAL_WORKFLOWS="$(
-            find .github/workflows \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | LC_ALL=C sort
-          )"
-
+          ACTUAL_WORKFLOWS="$(find .github/workflows -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
           if [ "$ACTUAL_WORKFLOWS" != "$EXPECTED_WORKFLOWS" ]; then
             echo "ERROR: unexpected workflow set after upstream synchronization:"
             printf '%s\n' "$ACTUAL_WORKFLOWS"
@@ -267,25 +201,10 @@ jobs:
           fi
 
           FORBIDDEN_PATHS=(
-            app/android
-            app/ios
-            app/linux
-            app/windows
-            app/web
-            cli
-            server
-            fastlane
-            support
-            .gitmodules
-            .github/release-drafter.yml
-            AGENTS.md
-            CLAUDE.md
-            CODE_SIGNING.md
-            CONTRIBUTING.md
-            CHANGELOG.md
-            app/.mcp.json
-            app/macos/Podfile.lock
-            app/assets/packaging/logo.ico
+            app/android app/ios app/linux app/windows app/web cli server fastlane support
+            .gitmodules .github/release-drafter.yml
+            AGENTS.md CLAUDE.md CODE_SIGNING.md CONTRIBUTING.md CHANGELOG.md
+            app/.mcp.json app/macos/Podfile.lock app/assets/packaging/logo.ico
           )
           for path in "${FORBIDDEN_PATHS[@]}"; do
             if [ -e "$path" ]; then
@@ -301,106 +220,8 @@ jobs:
             exit 1
           fi
 
-          python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          cargo = Path("Cargo.toml").read_text()
-          if re.search(r'(?m)^\\s*"cli",\\s*
-          TREE="$(git write-tree)"
-          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
-
-          export GIT_AUTHOR_NAME="github-actions[bot]"
-          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-
-          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
-          else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
-          fi
-
-          git reset --hard "$NEW_COMMIT"
-          git push origin "$NEW_COMMIT:refs/heads/main"
-
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euxo pipefail
-
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run macos-high-sierra.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f native_assets_strategy=native-backport \
-              -f upstream_tag="$TAG" \
-              -f publish_release=true; then
-              exit 0
-            fi
-
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
-          done
-
-          echo "ERROR: failed to dispatch High Sierra backport workflow."
-          exit 1
-, text)
-          if not match:
-              raise SystemExit(
-                  "ERROR: localsend_isolates rust-toolchain.toml has no targets array."
-              )
-          text = (
-              text[:match.start()]
-              + 'targets = ["x86_64-apple-darwin"]'
-              + text[match.end():]
-          )
-          rust_toolchain.write_text(text)
-          PY
-
-          APP_VERSION="$(
-            python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          text = Path("app/pubspec.yaml").read_text()
-          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
-          if not match:
-              raise SystemExit("ERROR: app version not found in upstream release.")
-          print(match.group(1))
-          PY
-          )"
-
-          APP_RELEASE_VERSION="${APP_VERSION%%+*}"
-          if [ "v${APP_RELEASE_VERSION}" != "$TAG" ]; then
-            echo "ERROR: official tag $TAG does not match app version $APP_VERSION."
-            exit 1
-          fi
-
-          git add -A
-
-          EXPECTED_WORKFLOWS=$'macos-high-sierra.yml\nsync-upstream-release.yml'
-          ACTUAL_WORKFLOWS="$(
-            find .github/workflows \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | LC_ALL=C sort
-          )"
-
-          if [ "$ACTUAL_WORKFLOWS" != "$EXPECTED_WORKFLOWS" ]; then
-            echo "ERROR: unexpected workflow set after upstream synchronization:"
-            printf '%s\n' "$ACTUAL_WORKFLOWS"
+          if grep -Eq '^[[:space:]]*"cli",[[:space:]]*$|^[[:space:]]*"server",[[:space:]]*$' Cargo.toml; then
+            echo "ERROR: deleted Cargo workspace members remain."
             exit 1
           fi
 
@@ -415,322 +236,9 @@ jobs:
           export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
           if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
+            NEW_COMMIT="$(printf '%s\n' "$MESSAGE" | git commit-tree "$TREE" -p "$PARENT")"
           else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
-          fi
-
-          git reset --hard "$NEW_COMMIT"
-          git push origin "$NEW_COMMIT:refs/heads/main"
-
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euxo pipefail
-
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run macos-high-sierra.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f native_assets_strategy=native-backport \
-              -f upstream_tag="$TAG" \
-              -f publish_release=true; then
-              exit 0
-            fi
-
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
-          done
-
-          echo "ERROR: failed to dispatch High Sierra backport workflow."
-          exit 1
-, cargo):
-              raise SystemExit("ERROR: cli remains in Cargo workspace members.")
-          if re.search(r'(?m)^\\s*"server",\\s*
-          TREE="$(git write-tree)"
-          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
-
-          export GIT_AUTHOR_NAME="github-actions[bot]"
-          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-
-          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
-          else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
-          fi
-
-          git reset --hard "$NEW_COMMIT"
-          git push origin "$NEW_COMMIT:refs/heads/main"
-
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euxo pipefail
-
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run macos-high-sierra.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f native_assets_strategy=native-backport \
-              -f upstream_tag="$TAG" \
-              -f publish_release=true; then
-              exit 0
-            fi
-
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
-          done
-
-          echo "ERROR: failed to dispatch High Sierra backport workflow."
-          exit 1
-, text)
-          if not match:
-              raise SystemExit(
-                  "ERROR: localsend_isolates rust-toolchain.toml has no targets array."
-              )
-          text = (
-              text[:match.start()]
-              + 'targets = ["x86_64-apple-darwin"]'
-              + text[match.end():]
-          )
-          rust_toolchain.write_text(text)
-          PY
-
-          APP_VERSION="$(
-            python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          text = Path("app/pubspec.yaml").read_text()
-          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
-          if not match:
-              raise SystemExit("ERROR: app version not found in upstream release.")
-          print(match.group(1))
-          PY
-          )"
-
-          APP_RELEASE_VERSION="${APP_VERSION%%+*}"
-          if [ "v${APP_RELEASE_VERSION}" != "$TAG" ]; then
-            echo "ERROR: official tag $TAG does not match app version $APP_VERSION."
-            exit 1
-          fi
-
-          git add -A
-
-          EXPECTED_WORKFLOWS=$'macos-high-sierra.yml\nsync-upstream-release.yml'
-          ACTUAL_WORKFLOWS="$(
-            find .github/workflows \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | LC_ALL=C sort
-          )"
-
-          if [ "$ACTUAL_WORKFLOWS" != "$EXPECTED_WORKFLOWS" ]; then
-            echo "ERROR: unexpected workflow set after upstream synchronization:"
-            printf '%s\n' "$ACTUAL_WORKFLOWS"
-            exit 1
-          fi
-
-          git diff --cached --check
-
-          TREE="$(git write-tree)"
-          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
-
-          export GIT_AUTHOR_NAME="github-actions[bot]"
-          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-
-          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
-          else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
-          fi
-
-          git reset --hard "$NEW_COMMIT"
-          git push origin "$NEW_COMMIT:refs/heads/main"
-
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euxo pipefail
-
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run macos-high-sierra.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f native_assets_strategy=native-backport \
-              -f upstream_tag="$TAG" \
-              -f publish_release=true; then
-              exit 0
-            fi
-
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
-          done
-
-          echo "ERROR: failed to dispatch High Sierra backport workflow."
-          exit 1
-, cargo):
-              raise SystemExit("ERROR: server remains in Cargo workspace members.")
-
-          rust_toolchain = Path("packages/localsend_isolates/rust-toolchain.toml").read_text()
-          if 'targets = ["x86_64-apple-darwin"]' not in rust_toolchain:
-              raise SystemExit("ERROR: Rust target list is not High Sierra x86_64-only.")
-          PY
-
-          git diff --cached --check
-
-          TREE="$(git write-tree)"
-          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
-
-          export GIT_AUTHOR_NAME="github-actions[bot]"
-          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-
-          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
-          else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
-          fi
-
-          git reset --hard "$NEW_COMMIT"
-          git push origin "$NEW_COMMIT:refs/heads/main"
-
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euxo pipefail
-
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run macos-high-sierra.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f native_assets_strategy=native-backport \
-              -f upstream_tag="$TAG" \
-              -f publish_release=true; then
-              exit 0
-            fi
-
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
-          done
-
-          echo "ERROR: failed to dispatch High Sierra backport workflow."
-          exit 1
-, text)
-          if not match:
-              raise SystemExit(
-                  "ERROR: localsend_isolates rust-toolchain.toml has no targets array."
-              )
-          text = (
-              text[:match.start()]
-              + 'targets = ["x86_64-apple-darwin"]'
-              + text[match.end():]
-          )
-          rust_toolchain.write_text(text)
-          PY
-
-          APP_VERSION="$(
-            python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          text = Path("app/pubspec.yaml").read_text()
-          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
-          if not match:
-              raise SystemExit("ERROR: app version not found in upstream release.")
-          print(match.group(1))
-          PY
-          )"
-
-          APP_RELEASE_VERSION="${APP_VERSION%%+*}"
-          if [ "v${APP_RELEASE_VERSION}" != "$TAG" ]; then
-            echo "ERROR: official tag $TAG does not match app version $APP_VERSION."
-            exit 1
-          fi
-
-          git add -A
-
-          EXPECTED_WORKFLOWS=$'macos-high-sierra.yml\nsync-upstream-release.yml'
-          ACTUAL_WORKFLOWS="$(
-            find .github/workflows \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | LC_ALL=C sort
-          )"
-
-          if [ "$ACTUAL_WORKFLOWS" != "$EXPECTED_WORKFLOWS" ]; then
-            echo "ERROR: unexpected workflow set after upstream synchronization:"
-            printf '%s\n' "$ACTUAL_WORKFLOWS"
-            exit 1
-          fi
-
-          git diff --cached --check
-
-          TREE="$(git write-tree)"
-          MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
-
-          export GIT_AUTHOR_NAME="github-actions[bot]"
-          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
-          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-
-          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" "$PARENT"; then
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT"
-            )"
-          else
-            NEW_COMMIT="$(
-              printf '%s\n' "$MESSAGE" \
-                | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT"
-            )"
+            NEW_COMMIT="$(printf '%s\n' "$MESSAGE" | git commit-tree "$TREE" -p "$PARENT" -p "$UPSTREAM_COMMIT")"
           fi
 
           git reset --hard "$NEW_COMMIT"
