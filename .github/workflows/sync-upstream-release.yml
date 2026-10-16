@@ -1,4 +1,5 @@
 name: Sync upstream LocalSend releases
+# The synchronization workflow is intentionally release-driven: each run resolves the exact official release tag.
 
 on:
   push:
