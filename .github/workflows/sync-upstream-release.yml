@@ -229,7 +229,7 @@ jobs:
             exit 1
           fi
 
-          git -c core.whitespace=blank-at-eol,space-before-tab diff --cached --check
+          git -c core.whitespace=blank-at-eol,space-before-tab,-blank-at-eof diff --cached --check
 
           TREE="$(git write-tree)"
           MESSAGE="Sync upstream LocalSend $TAG for High Sierra"
