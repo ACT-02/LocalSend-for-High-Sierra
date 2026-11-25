@@ -143,11 +143,11 @@ return listenerFailed(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ip,  RegisterDtoV2 info)?  register,TResult Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? certFingerprint,  Map<String, FileDto> files)?  prepareUpload,TResult Function( String sessionId,  String fileId,  FileDto file)?  fileUpload,TResult Function( String sessionId,  SessionEndReasonV2 reason)?  sessionEnd,TResult Function( String sessionId)?  prepareUploadAborted,TResult Function( String ip,  String sessionId)?  cancelReceived,TResult Function( String ip,  String sessionId,  String? userAgent)?  webPrepareDownload,TResult Function( String sessionId,  String fileId,  FileDto file)?  webFileDownload,TResult Function( List<String> args)?  show_,TResult Function( String error)?  listenerFailed,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String ip,  RegisterDtoV2 info)?  register,TResult Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? senderFingerprint,  Map<String, FileDto> files)?  prepareUpload,TResult Function( String sessionId,  String fileId,  FileDto file)?  fileUpload,TResult Function( String sessionId,  SessionEndReasonV2 reason)?  sessionEnd,TResult Function( String sessionId)?  prepareUploadAborted,TResult Function( String ip,  String sessionId)?  cancelReceived,TResult Function( String ip,  String sessionId,  String? userAgent)?  webPrepareDownload,TResult Function( String sessionId,  String fileId,  FileDto file)?  webFileDownload,TResult Function( List<String> args)?  show_,TResult Function( String error)?  listenerFailed,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case RsServerEvent_Register() when register != null:
 return register(_that.ip,_that.info);case RsServerEvent_PrepareUpload() when prepareUpload != null:
-return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.certFingerprint,_that.files);case RsServerEvent_FileUpload() when fileUpload != null:
+return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.senderFingerprint,_that.files);case RsServerEvent_FileUpload() when fileUpload != null:
 return fileUpload(_that.sessionId,_that.fileId,_that.file);case RsServerEvent_SessionEnd() when sessionEnd != null:
 return sessionEnd(_that.sessionId,_that.reason);case RsServerEvent_PrepareUploadAborted() when prepareUploadAborted != null:
 return prepareUploadAborted(_that.sessionId);case RsServerEvent_CancelReceived() when cancelReceived != null:
@@ -173,11 +173,11 @@ return listenerFailed(_that.error);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ip,  RegisterDtoV2 info)  register,required TResult Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? certFingerprint,  Map<String, FileDto> files)  prepareUpload,required TResult Function( String sessionId,  String fileId,  FileDto file)  fileUpload,required TResult Function( String sessionId,  SessionEndReasonV2 reason)  sessionEnd,required TResult Function( String sessionId)  prepareUploadAborted,required TResult Function( String ip,  String sessionId)  cancelReceived,required TResult Function( String ip,  String sessionId,  String? userAgent)  webPrepareDownload,required TResult Function( String sessionId,  String fileId,  FileDto file)  webFileDownload,required TResult Function( List<String> args)  show_,required TResult Function( String error)  listenerFailed,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String ip,  RegisterDtoV2 info)  register,required TResult Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? senderFingerprint,  Map<String, FileDto> files)  prepareUpload,required TResult Function( String sessionId,  String fileId,  FileDto file)  fileUpload,required TResult Function( String sessionId,  SessionEndReasonV2 reason)  sessionEnd,required TResult Function( String sessionId)  prepareUploadAborted,required TResult Function( String ip,  String sessionId)  cancelReceived,required TResult Function( String ip,  String sessionId,  String? userAgent)  webPrepareDownload,required TResult Function( String sessionId,  String fileId,  FileDto file)  webFileDownload,required TResult Function( List<String> args)  show_,required TResult Function( String error)  listenerFailed,}) {final _that = this;
 switch (_that) {
 case RsServerEvent_Register():
 return register(_that.ip,_that.info);case RsServerEvent_PrepareUpload():
-return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.certFingerprint,_that.files);case RsServerEvent_FileUpload():
+return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.senderFingerprint,_that.files);case RsServerEvent_FileUpload():
 return fileUpload(_that.sessionId,_that.fileId,_that.file);case RsServerEvent_SessionEnd():
 return sessionEnd(_that.sessionId,_that.reason);case RsServerEvent_PrepareUploadAborted():
 return prepareUploadAborted(_that.sessionId);case RsServerEvent_CancelReceived():
@@ -199,11 +199,11 @@ return listenerFailed(_that.error);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ip,  RegisterDtoV2 info)?  register,TResult? Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? certFingerprint,  Map<String, FileDto> files)?  prepareUpload,TResult? Function( String sessionId,  String fileId,  FileDto file)?  fileUpload,TResult? Function( String sessionId,  SessionEndReasonV2 reason)?  sessionEnd,TResult? Function( String sessionId)?  prepareUploadAborted,TResult? Function( String ip,  String sessionId)?  cancelReceived,TResult? Function( String ip,  String sessionId,  String? userAgent)?  webPrepareDownload,TResult? Function( String sessionId,  String fileId,  FileDto file)?  webFileDownload,TResult? Function( List<String> args)?  show_,TResult? Function( String error)?  listenerFailed,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String ip,  RegisterDtoV2 info)?  register,TResult? Function( String sessionId,  String ip,  RegisterDtoV2 info,  String? senderFingerprint,  Map<String, FileDto> files)?  prepareUpload,TResult? Function( String sessionId,  String fileId,  FileDto file)?  fileUpload,TResult? Function( String sessionId,  SessionEndReasonV2 reason)?  sessionEnd,TResult? Function( String sessionId)?  prepareUploadAborted,TResult? Function( String ip,  String sessionId)?  cancelReceived,TResult? Function( String ip,  String sessionId,  String? userAgent)?  webPrepareDownload,TResult? Function( String sessionId,  String fileId,  FileDto file)?  webFileDownload,TResult? Function( List<String> args)?  show_,TResult? Function( String error)?  listenerFailed,}) {final _that = this;
 switch (_that) {
 case RsServerEvent_Register() when register != null:
 return register(_that.ip,_that.info);case RsServerEvent_PrepareUpload() when prepareUpload != null:
-return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.certFingerprint,_that.files);case RsServerEvent_FileUpload() when fileUpload != null:
+return prepareUpload(_that.sessionId,_that.ip,_that.info,_that.senderFingerprint,_that.files);case RsServerEvent_FileUpload() when fileUpload != null:
 return fileUpload(_that.sessionId,_that.fileId,_that.file);case RsServerEvent_SessionEnd() when sessionEnd != null:
 return sessionEnd(_that.sessionId,_that.reason);case RsServerEvent_PrepareUploadAborted() when prepareUploadAborted != null:
 return prepareUploadAborted(_that.sessionId);case RsServerEvent_CancelReceived() when cancelReceived != null:
@@ -291,18 +291,20 @@ as RegisterDtoV2,
 
 
 class RsServerEvent_PrepareUpload extends RsServerEvent {
-  const RsServerEvent_PrepareUpload({required this.sessionId, required this.ip, required this.info, this.certFingerprint, required final  Map<String, FileDto> files}): _files = files,super._();
+  const RsServerEvent_PrepareUpload({required this.sessionId, required this.ip, required this.info, this.senderFingerprint, required final  Map<String, FileDto> files}): _files = files,super._();
   
 
 /// The session ID the upload session will have when the request is accepted.
  final  String sessionId;
  final  String ip;
  final  RegisterDtoV2 info;
-/// The SHA-256 fingerprint (uppercase hex) of the sender's client
-/// certificate verified during the mTLS handshake. Unlike
-/// `info.fingerprint`, this value cannot be spoofed.
-/// `None` when the server runs without TLS.
- final  String? certFingerprint;
+/// The fingerprint identifying the sender. Use this instead of
+/// `info.fingerprint`, which is self-reported.
+/// On TLS, the fingerprint of the verified client certificate, so it
+/// cannot be spoofed. Without TLS, the self-reported `info.fingerprint`.
+/// `None` when the sender presented no client certificate on TLS (e.g. a
+/// browser on the receive-via-link page): the sender is anonymous.
+ final  String? senderFingerprint;
  final  Map<String, FileDto> _files;
  Map<String, FileDto> get files {
   if (_files is EqualUnmodifiableMapView) return _files;
@@ -321,16 +323,16 @@ $RsServerEvent_PrepareUploadCopyWith<RsServerEvent_PrepareUpload> get copyWith =
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RsServerEvent_PrepareUpload&&(identical(other.sessionId, sessionId) || other.sessionId == sessionId)&&(identical(other.ip, ip) || other.ip == ip)&&(identical(other.info, info) || other.info == info)&&(identical(other.certFingerprint, certFingerprint) || other.certFingerprint == certFingerprint)&&const DeepCollectionEquality().equals(other._files, _files));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is RsServerEvent_PrepareUpload&&(identical(other.sessionId, sessionId) || other.sessionId == sessionId)&&(identical(other.ip, ip) || other.ip == ip)&&(identical(other.info, info) || other.info == info)&&(identical(other.senderFingerprint, senderFingerprint) || other.senderFingerprint == senderFingerprint)&&const DeepCollectionEquality().equals(other._files, _files));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,sessionId,ip,info,certFingerprint,const DeepCollectionEquality().hash(_files));
+int get hashCode => Object.hash(runtimeType,sessionId,ip,info,senderFingerprint,const DeepCollectionEquality().hash(_files));
 
 @override
 String toString() {
-  return 'RsServerEvent.prepareUpload(sessionId: $sessionId, ip: $ip, info: $info, certFingerprint: $certFingerprint, files: $files)';
+  return 'RsServerEvent.prepareUpload(sessionId: $sessionId, ip: $ip, info: $info, senderFingerprint: $senderFingerprint, files: $files)';
 }
 
 
@@ -341,7 +343,7 @@ abstract mixin class $RsServerEvent_PrepareUploadCopyWith<$Res> implements $RsSe
   factory $RsServerEvent_PrepareUploadCopyWith(RsServerEvent_PrepareUpload value, $Res Function(RsServerEvent_PrepareUpload) _then) = _$RsServerEvent_PrepareUploadCopyWithImpl;
 @useResult
 $Res call({
- String sessionId, String ip, RegisterDtoV2 info, String? certFingerprint, Map<String, FileDto> files
+ String sessionId, String ip, RegisterDtoV2 info, String? senderFingerprint, Map<String, FileDto> files
 });
 
 
@@ -358,12 +360,12 @@ class _$RsServerEvent_PrepareUploadCopyWithImpl<$Res>
 
 /// Create a copy of RsServerEvent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? sessionId = null,Object? ip = null,Object? info = null,Object? certFingerprint = freezed,Object? files = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? sessionId = null,Object? ip = null,Object? info = null,Object? senderFingerprint = freezed,Object? files = null,}) {
   return _then(RsServerEvent_PrepareUpload(
 sessionId: null == sessionId ? _self.sessionId : sessionId // ignore: cast_nullable_to_non_nullable
 as String,ip: null == ip ? _self.ip : ip // ignore: cast_nullable_to_non_nullable
 as String,info: null == info ? _self.info : info // ignore: cast_nullable_to_non_nullable
-as RegisterDtoV2,certFingerprint: freezed == certFingerprint ? _self.certFingerprint : certFingerprint // ignore: cast_nullable_to_non_nullable
+as RegisterDtoV2,senderFingerprint: freezed == senderFingerprint ? _self.senderFingerprint : senderFingerprint // ignore: cast_nullable_to_non_nullable
 as String?,files: null == files ? _self._files : files // ignore: cast_nullable_to_non_nullable
 as Map<String, FileDto>,
   ));
@@ -924,5 +926,314 @@ as String,
 
 
 }
+
+/// @nodoc
+mixin _$WebMode {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WebMode);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'WebMode()';
+}
+
+
+}
+
+/// @nodoc
+class $WebModeCopyWith<$Res>  {
+$WebModeCopyWith(WebMode _, $Res Function(WebMode) __);
+}
+
+
+/// Adds pattern-matching-related methods to [WebMode].
+extension WebModePatterns on WebMode {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( WebMode_Disabled value)?  disabled,TResult Function( WebMode_Download value)?  download,TResult Function( WebMode_Upload value)?  upload,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case WebMode_Disabled() when disabled != null:
+return disabled(_that);case WebMode_Download() when download != null:
+return download(_that);case WebMode_Upload() when upload != null:
+return upload(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( WebMode_Disabled value)  disabled,required TResult Function( WebMode_Download value)  download,required TResult Function( WebMode_Upload value)  upload,}){
+final _that = this;
+switch (_that) {
+case WebMode_Disabled():
+return disabled(_that);case WebMode_Download():
+return download(_that);case WebMode_Upload():
+return upload(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( WebMode_Disabled value)?  disabled,TResult? Function( WebMode_Download value)?  download,TResult? Function( WebMode_Upload value)?  upload,}){
+final _that = this;
+switch (_that) {
+case WebMode_Disabled() when disabled != null:
+return disabled(_that);case WebMode_Download() when download != null:
+return download(_that);case WebMode_Upload() when upload != null:
+return upload(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  disabled,TResult Function( Map<String, FileDto> files,  String? pin)?  download,TResult Function()?  upload,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case WebMode_Disabled() when disabled != null:
+return disabled();case WebMode_Download() when download != null:
+return download(_that.files,_that.pin);case WebMode_Upload() when upload != null:
+return upload();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  disabled,required TResult Function( Map<String, FileDto> files,  String? pin)  download,required TResult Function()  upload,}) {final _that = this;
+switch (_that) {
+case WebMode_Disabled():
+return disabled();case WebMode_Download():
+return download(_that.files,_that.pin);case WebMode_Upload():
+return upload();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  disabled,TResult? Function( Map<String, FileDto> files,  String? pin)?  download,TResult? Function()?  upload,}) {final _that = this;
+switch (_that) {
+case WebMode_Disabled() when disabled != null:
+return disabled();case WebMode_Download() when download != null:
+return download(_that.files,_that.pin);case WebMode_Upload() when upload != null:
+return upload();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class WebMode_Disabled extends WebMode {
+  const WebMode_Disabled(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WebMode_Disabled);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'WebMode.disabled()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class WebMode_Download extends WebMode {
+  const WebMode_Download({required final  Map<String, FileDto> files, this.pin}): _files = files,super._();
+  
+
+/// The metadata of the files offered for download, mapped by file ID.
+/// The content is requested per download via [RsServerEvent::WebFileDownload].
+ final  Map<String, FileDto> _files;
+/// The metadata of the files offered for download, mapped by file ID.
+/// The content is requested per download via [RsServerEvent::WebFileDownload].
+ Map<String, FileDto> get files {
+  if (_files is EqualUnmodifiableMapView) return _files;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(_files);
+}
+
+/// Optional PIN that web clients must provide via the `pin` query parameter.
+ final  String? pin;
+
+/// Create a copy of WebMode
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WebMode_DownloadCopyWith<WebMode_Download> get copyWith => _$WebMode_DownloadCopyWithImpl<WebMode_Download>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WebMode_Download&&const DeepCollectionEquality().equals(other._files, _files)&&(identical(other.pin, pin) || other.pin == pin));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,const DeepCollectionEquality().hash(_files),pin);
+
+@override
+String toString() {
+  return 'WebMode.download(files: $files, pin: $pin)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WebMode_DownloadCopyWith<$Res> implements $WebModeCopyWith<$Res> {
+  factory $WebMode_DownloadCopyWith(WebMode_Download value, $Res Function(WebMode_Download) _then) = _$WebMode_DownloadCopyWithImpl;
+@useResult
+$Res call({
+ Map<String, FileDto> files, String? pin
+});
+
+
+
+
+}
+/// @nodoc
+class _$WebMode_DownloadCopyWithImpl<$Res>
+    implements $WebMode_DownloadCopyWith<$Res> {
+  _$WebMode_DownloadCopyWithImpl(this._self, this._then);
+
+  final WebMode_Download _self;
+  final $Res Function(WebMode_Download) _then;
+
+/// Create a copy of WebMode
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? files = null,Object? pin = freezed,}) {
+  return _then(WebMode_Download(
+files: null == files ? _self._files : files // ignore: cast_nullable_to_non_nullable
+as Map<String, FileDto>,pin: freezed == pin ? _self.pin : pin // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class WebMode_Upload extends WebMode {
+  const WebMode_Upload(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WebMode_Upload);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'WebMode.upload()';
+}
+
+
+}
+
+
+
 
 // dart format on

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:dart_mappable/dart_mappable.dart';
 import 'package:flutter/foundation.dart';
@@ -8,6 +7,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:localsend_app/config/refena.dart';
 import 'package:localsend_app/config/theme.dart';
+import 'package:localsend_app/gen/assets.gen.dart';
+import 'package:localsend_app/pages/changelog_page.dart';
 import 'package:localsend_app/pages/home_page.dart';
 import 'package:localsend_app/pages/home_page_controller.dart';
 import 'package:localsend_app/pages/whats_new_page.dart';
@@ -26,6 +27,7 @@ import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/provider/tv_provider.dart';
 import 'package:localsend_app/provider/version_provider.dart';
 import 'package:localsend_app/provider/window_dimensions_provider.dart';
+import 'package:localsend_app/util/changelog.dart';
 import 'package:localsend_app/util/i18n.dart';
 import 'package:localsend_app/util/native/autostart_helper.dart';
 import 'package:localsend_app/util/native/cache_helper.dart';
@@ -33,6 +35,7 @@ import 'package:localsend_app/util/native/channel/android_channel.dart';
 import 'package:localsend_app/util/native/context_menu_helper.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
 import 'package:localsend_app/util/native/device_info_helper.dart';
+import 'package:localsend_app/util/native/exit_helper.dart';
 import 'package:localsend_app/util/native/macos_channel.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
@@ -40,15 +43,17 @@ import 'package:localsend_app/util/notification_strings.dart';
 import 'package:localsend_app/util/ui/dynamic_colors.dart';
 import 'package:localsend_app/util/ui/snackbar.dart';
 import 'package:localsend_app/widget/dialogs/local_network_dialog.dart';
+import 'package:localsend_app/widget/dialogs/whats_new_dialog.dart';
 import 'package:localsend_isolates/isolate.dart';
 import 'package:localsend_isolates/model/dto/file_dto.dart';
 import 'package:localsend_isolates/model/dto/multicast_dto.dart';
 import 'package:localsend_isolates/rust/api/logging.dart' as rust_logging;
-import 'package:localsend_isolates/rust/frb_generated.dart';
 import 'package:localsend_isolates/util/logger.dart';
+import 'package:localsend_isolates/util/rust_init.dart';
 import 'package:localsend_isolates/util/show_instance.dart';
 import 'package:localsend_isolates/util/transfer_notification.dart';
 import 'package:logging/logging.dart';
+import 'package:marionette_flutter/marionette_flutter.dart';
 import 'package:refena_flutter/addons.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:routerino/routerino.dart';
@@ -59,12 +64,26 @@ final _logger = Logger('Init');
 
 /// Will be called before the MaterialApp started
 Future<RefenaContainer> preInit(List<String> args) async {
-  WidgetsFlutterBinding.ensureInitialized();
+  if (kDebugMode) {
+    // Lets the Marionette MCP server drive the app (tap, scroll, screenshot).
+    MarionetteBinding.ensureInitialized();
+  } else {
+    WidgetsFlutterBinding.ensureInitialized();
+  }
 
   initLogger(args.contains('-v') || args.contains('--verbose') ? Level.ALL : Level.INFO);
+
+  if (checkPlatform([TargetPlatform.linux])) {
+    try {
+      cacheWaylandStatus(await isWaylandDisplay());
+    } catch (e) {
+      _logger.warning('Reading display backend failed; using session type: $e');
+    }
+  }
+
   MapperContainer.globals.use(const FileDtoMapper());
 
-  await RustLib.init();
+  await initRustLib();
 
   if (kDebugMode) {
     try {
@@ -101,7 +120,7 @@ Future<RefenaContainer> preInit(List<String> args) async {
       args: args,
     );
     if (handedOver) {
-      exit(0); // Another instance does exist
+      await exitApp(); // Another instance does exist
     }
 
     // initialize tray AFTER i18n has been initialized
@@ -113,6 +132,9 @@ Future<RefenaContainer> preInit(List<String> args) async {
 
     // initialize size and position
     await WindowManager.instance.ensureInitialized();
+    if (checkPlatformIsNotWaylandDesktop()) {
+      await windowManager.setAlwaysOnTop(persistenceService.getAlwaysOnTop());
+    }
     await WindowDimensionsController(persistenceService).initDimensionsConfiguration();
     if (args.contains(startHiddenFlag)) {
       // keep this app hidden
@@ -187,10 +209,14 @@ Future<void> postInit(BuildContext context, Ref ref, bool appStart) async {
   await updateSystemOverlayStyle(context);
 
   if (checkPlatform([TargetPlatform.android])) {
-    try {
-      await FlutterDisplayMode.setHighRefreshRate();
-    } catch (e) {
-      _logger.warning('Setting high refresh rate failed', e);
+    // On some TVs, requesting a high refresh rate can trigger HDMI resync and blank the display when entering or leaving the app.
+    // https://github.com/localsend/localsend/issues/3452
+    if (!ref.read(tvProvider)) {
+      try {
+        await FlutterDisplayMode.setHighRefreshRate();
+      } catch (e) {
+        _logger.warning('Setting high refresh rate failed', e);
+      }
     }
 
     // Android 17+ blocks multicast discovery and LAN connections until this permission is granted,
@@ -293,17 +319,28 @@ Future<void> postInit(BuildContext context, Ref ref, bool appStart) async {
     ref.global.dispatchAsync(ClearCacheAction()); // ignore: unawaited_futures
   }
 
+  final version = (await ref.future(versionProvider)).version;
   if (!ref.read(persistenceProvider).isFirstAppStart) {
-    WhatsNewPage? whatsNew = WhatsNewPage.fromLastVersion(lastVersion: ref.read(persistenceProvider).getWhatsNew());
+    final lastVersion = ref.read(persistenceProvider).getWhatsNew();
+    WhatsNewPage? whatsNew = WhatsNewPage.fromLastVersion(lastVersion: lastVersion);
     if (whatsNew != null) {
       // ignore: unawaited_futures
       ref.global.dispatchAsync(NavigateAction.push(whatsNew));
+    } else if (lastVersion != null && isNewerVersion(version, lastVersion)) {
+      final releases = parseChangelog(await rootBundle.loadString(Assets.changelog));
+      final release = releases.where((release) => release.version == version).firstOrNull;
+      if (release != null && context.mounted) {
+        // ignore: unawaited_futures
+        WhatsNewDialog.open(context, release).then((showChangelog) async {
+          if (showChangelog) {
+            await ref.global.dispatchAsync(NavigateAction.push(const ChangelogPage()));
+          }
+        });
+      }
     }
   }
 
-  await ref.future(versionProvider).then((version) async {
-    await ref.read(persistenceProvider).setWhatsNew(version.version);
-  });
+  await ref.read(persistenceProvider).setWhatsNew(version);
 
   // [FOSS_REMOVE_START]
   if (checkPlatformSupportPayment()) {

@@ -195,13 +195,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<Uint8List> dco_decode_StreamSink_list_prim_u_8_strict_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<RsDiscoveryEvent> dco_decode_StreamSink_rs_discovery_event_Sse(dynamic raw);
+
+  @protected
   RustStreamSink<RsHashFileEvent> dco_decode_StreamSink_rs_hash_file_event_Sse(dynamic raw);
 
   @protected
   RustStreamSink<RsServerEvent> dco_decode_StreamSink_rs_server_event_Sse(dynamic raw);
-
-  @protected
-  RustStreamSink<RsStoredDevice> dco_decode_StreamSink_rs_stored_device_Sse(dynamic raw);
 
   @protected
   RustStreamSink<RsUploadEvent> dco_decode_StreamSink_rs_upload_event_Sse(dynamic raw);
@@ -269,10 +269,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RegisterDtoV2 dco_decode_box_autoadd_register_dto_v_2(dynamic raw);
 
   @protected
+  RsDeviceChannel dco_decode_box_autoadd_rs_device_channel(dynamic raw);
+
+  @protected
   RsDiscoveredDevice dco_decode_box_autoadd_rs_discovered_device(dynamic raw);
 
   @protected
   RsHttpClientError dco_decode_box_autoadd_rs_http_client_error(dynamic raw);
+
+  @protected
+  RsStoredDevice dco_decode_box_autoadd_rs_stored_device(dynamic raw);
 
   @protected
   RTCSendFileResponse dco_decode_box_autoadd_rtc_send_file_response(dynamic raw);
@@ -284,13 +290,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_box_autoadd_u_32(dynamic raw);
 
   @protected
-  WebPages dco_decode_box_autoadd_web_pages(dynamic raw);
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
   @protected
   WebParams dco_decode_box_autoadd_web_params(dynamic raw);
-
-  @protected
-  WebSendParams dco_decode_box_autoadd_web_send_params(dynamic raw);
 
   @protected
   WsServerSdpMessage dco_decode_box_autoadd_ws_server_sdp_message(dynamic raw);
@@ -300,9 +303,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ClientInfoWithoutId dco_decode_client_info_without_id(dynamic raw);
-
-  @protected
-  DeviceLogKind dco_decode_device_log_kind(dynamic raw);
 
   @protected
   DeviceType dco_decode_device_type(dynamic raw);
@@ -356,6 +356,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<RsDeviceLog> dco_decode_list_rs_device_log(dynamic raw);
 
   @protected
+  List<RsStoredChannel> dco_decode_list_rs_stored_channel(dynamic raw);
+
+  @protected
   LsHttpClientVersion dco_decode_ls_http_client_version(dynamic raw);
 
   @protected
@@ -390,13 +393,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
   @protected
-  WebPages? dco_decode_opt_box_autoadd_web_pages(dynamic raw);
-
-  @protected
-  WebParams? dco_decode_opt_box_autoadd_web_params(dynamic raw);
-
-  @protected
-  WebSendParams? dco_decode_opt_box_autoadd_web_send_params(dynamic raw);
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
 
   @protected
   List<String>? dco_decode_opt_list_String(dynamic raw);
@@ -453,7 +450,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RsDeviceLog dco_decode_rs_device_log(dynamic raw);
 
   @protected
+  RsDeviceLogEvent dco_decode_rs_device_log_event(dynamic raw);
+
+  @protected
   RsDiscoveredDevice dco_decode_rs_discovered_device(dynamic raw);
+
+  @protected
+  RsDiscoveryEvent dco_decode_rs_discovery_event(dynamic raw);
 
   @protected
   RsHashFileEvent dco_decode_rs_hash_file_event(dynamic raw);
@@ -462,7 +465,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RsHttpClientError dco_decode_rs_http_client_error(dynamic raw);
 
   @protected
+  RsOutbound dco_decode_rs_outbound(dynamic raw);
+
+  @protected
   RsServerEvent dco_decode_rs_server_event(dynamic raw);
+
+  @protected
+  RsStoredChannel dco_decode_rs_stored_channel(dynamic raw);
 
   @protected
   RsStoredDevice dco_decode_rs_stored_device(dynamic raw);
@@ -510,13 +519,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WebI18n dco_decode_web_i_18_n(dynamic raw);
 
   @protected
+  WebMode dco_decode_web_mode(dynamic raw);
+
+  @protected
   WebPages dco_decode_web_pages(dynamic raw);
 
   @protected
   WebParams dco_decode_web_params(dynamic raw);
-
-  @protected
-  WebSendParams dco_decode_web_send_params(dynamic raw);
 
   @protected
   WsServerMessage dco_decode_ws_server_message(dynamic raw);
@@ -674,13 +683,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustStreamSink<Uint8List> sse_decode_StreamSink_list_prim_u_8_strict_Sse(SseDeserializer deserializer);
 
   @protected
+  RustStreamSink<RsDiscoveryEvent> sse_decode_StreamSink_rs_discovery_event_Sse(SseDeserializer deserializer);
+
+  @protected
   RustStreamSink<RsHashFileEvent> sse_decode_StreamSink_rs_hash_file_event_Sse(SseDeserializer deserializer);
 
   @protected
   RustStreamSink<RsServerEvent> sse_decode_StreamSink_rs_server_event_Sse(SseDeserializer deserializer);
-
-  @protected
-  RustStreamSink<RsStoredDevice> sse_decode_StreamSink_rs_stored_device_Sse(SseDeserializer deserializer);
 
   @protected
   RustStreamSink<RsUploadEvent> sse_decode_StreamSink_rs_upload_event_Sse(SseDeserializer deserializer);
@@ -748,10 +757,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RegisterDtoV2 sse_decode_box_autoadd_register_dto_v_2(SseDeserializer deserializer);
 
   @protected
+  RsDeviceChannel sse_decode_box_autoadd_rs_device_channel(SseDeserializer deserializer);
+
+  @protected
   RsDiscoveredDevice sse_decode_box_autoadd_rs_discovered_device(SseDeserializer deserializer);
 
   @protected
   RsHttpClientError sse_decode_box_autoadd_rs_http_client_error(SseDeserializer deserializer);
+
+  @protected
+  RsStoredDevice sse_decode_box_autoadd_rs_stored_device(SseDeserializer deserializer);
 
   @protected
   RTCSendFileResponse sse_decode_box_autoadd_rtc_send_file_response(SseDeserializer deserializer);
@@ -763,13 +778,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
-  WebPages sse_decode_box_autoadd_web_pages(SseDeserializer deserializer);
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
   WebParams sse_decode_box_autoadd_web_params(SseDeserializer deserializer);
-
-  @protected
-  WebSendParams sse_decode_box_autoadd_web_send_params(SseDeserializer deserializer);
 
   @protected
   WsServerSdpMessage sse_decode_box_autoadd_ws_server_sdp_message(SseDeserializer deserializer);
@@ -779,9 +791,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ClientInfoWithoutId sse_decode_client_info_without_id(SseDeserializer deserializer);
-
-  @protected
-  DeviceLogKind sse_decode_device_log_kind(SseDeserializer deserializer);
 
   @protected
   DeviceType sse_decode_device_type(SseDeserializer deserializer);
@@ -835,6 +844,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<RsDeviceLog> sse_decode_list_rs_device_log(SseDeserializer deserializer);
 
   @protected
+  List<RsStoredChannel> sse_decode_list_rs_stored_channel(SseDeserializer deserializer);
+
+  @protected
   LsHttpClientVersion sse_decode_ls_http_client_version(SseDeserializer deserializer);
 
   @protected
@@ -871,13 +883,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
 
   @protected
-  WebPages? sse_decode_opt_box_autoadd_web_pages(SseDeserializer deserializer);
-
-  @protected
-  WebParams? sse_decode_opt_box_autoadd_web_params(SseDeserializer deserializer);
-
-  @protected
-  WebSendParams? sse_decode_opt_box_autoadd_web_send_params(SseDeserializer deserializer);
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
 
   @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
@@ -934,7 +940,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RsDeviceLog sse_decode_rs_device_log(SseDeserializer deserializer);
 
   @protected
+  RsDeviceLogEvent sse_decode_rs_device_log_event(SseDeserializer deserializer);
+
+  @protected
   RsDiscoveredDevice sse_decode_rs_discovered_device(SseDeserializer deserializer);
+
+  @protected
+  RsDiscoveryEvent sse_decode_rs_discovery_event(SseDeserializer deserializer);
 
   @protected
   RsHashFileEvent sse_decode_rs_hash_file_event(SseDeserializer deserializer);
@@ -943,7 +955,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RsHttpClientError sse_decode_rs_http_client_error(SseDeserializer deserializer);
 
   @protected
+  RsOutbound sse_decode_rs_outbound(SseDeserializer deserializer);
+
+  @protected
   RsServerEvent sse_decode_rs_server_event(SseDeserializer deserializer);
+
+  @protected
+  RsStoredChannel sse_decode_rs_stored_channel(SseDeserializer deserializer);
 
   @protected
   RsStoredDevice sse_decode_rs_stored_device(SseDeserializer deserializer);
@@ -991,13 +1009,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WebI18n sse_decode_web_i_18_n(SseDeserializer deserializer);
 
   @protected
+  WebMode sse_decode_web_mode(SseDeserializer deserializer);
+
+  @protected
   WebPages sse_decode_web_pages(SseDeserializer deserializer);
 
   @protected
   WebParams sse_decode_web_params(SseDeserializer deserializer);
-
-  @protected
-  WebSendParams sse_decode_web_send_params(SseDeserializer deserializer);
 
   @protected
   WsServerMessage sse_decode_ws_server_message(SseDeserializer deserializer);
@@ -1199,13 +1217,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_StreamSink_list_prim_u_8_strict_Sse(RustStreamSink<Uint8List> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_StreamSink_rs_discovery_event_Sse(RustStreamSink<RsDiscoveryEvent> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_StreamSink_rs_hash_file_event_Sse(RustStreamSink<RsHashFileEvent> self, SseSerializer serializer);
 
   @protected
   void sse_encode_StreamSink_rs_server_event_Sse(RustStreamSink<RsServerEvent> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_StreamSink_rs_stored_device_Sse(RustStreamSink<RsStoredDevice> self, SseSerializer serializer);
 
   @protected
   void sse_encode_StreamSink_rs_upload_event_Sse(RustStreamSink<RsUploadEvent> self, SseSerializer serializer);
@@ -1274,10 +1292,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_register_dto_v_2(RegisterDtoV2 self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_rs_device_channel(RsDeviceChannel self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_rs_discovered_device(RsDiscoveredDevice self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_rs_http_client_error(RsHttpClientError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_rs_stored_device(RsStoredDevice self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_rtc_send_file_response(RTCSendFileResponse self, SseSerializer serializer);
@@ -1289,13 +1313,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
 
   @protected
-  void sse_encode_box_autoadd_web_pages(WebPages self, SseSerializer serializer);
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_web_params(WebParams self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_web_send_params(WebSendParams self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_ws_server_sdp_message(WsServerSdpMessage self, SseSerializer serializer);
@@ -1305,9 +1326,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_client_info_without_id(ClientInfoWithoutId self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_device_log_kind(DeviceLogKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_device_type(DeviceType self, SseSerializer serializer);
@@ -1361,6 +1379,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_rs_device_log(List<RsDeviceLog> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_rs_stored_channel(List<RsStoredChannel> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_ls_http_client_version(LsHttpClientVersion self, SseSerializer serializer);
 
   @protected
@@ -1397,13 +1418,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
 
   @protected
-  void sse_encode_opt_box_autoadd_web_pages(WebPages? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_web_params(WebParams? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_web_send_params(WebSendParams? self, SseSerializer serializer);
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
@@ -1461,7 +1476,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_rs_device_log(RsDeviceLog self, SseSerializer serializer);
 
   @protected
+  void sse_encode_rs_device_log_event(RsDeviceLogEvent self, SseSerializer serializer);
+
+  @protected
   void sse_encode_rs_discovered_device(RsDiscoveredDevice self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_rs_discovery_event(RsDiscoveryEvent self, SseSerializer serializer);
 
   @protected
   void sse_encode_rs_hash_file_event(RsHashFileEvent self, SseSerializer serializer);
@@ -1470,7 +1491,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_rs_http_client_error(RsHttpClientError self, SseSerializer serializer);
 
   @protected
+  void sse_encode_rs_outbound(RsOutbound self, SseSerializer serializer);
+
+  @protected
   void sse_encode_rs_server_event(RsServerEvent self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_rs_stored_channel(RsStoredChannel self, SseSerializer serializer);
 
   @protected
   void sse_encode_rs_stored_device(RsStoredDevice self, SseSerializer serializer);
@@ -1518,13 +1545,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_web_i_18_n(WebI18n self, SseSerializer serializer);
 
   @protected
+  void sse_encode_web_mode(WebMode self, SseSerializer serializer);
+
+  @protected
   void sse_encode_web_pages(WebPages self, SseSerializer serializer);
 
   @protected
   void sse_encode_web_params(WebParams self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_web_send_params(WebSendParams self, SseSerializer serializer);
 
   @protected
   void sse_encode_ws_server_message(WsServerMessage self, SseSerializer serializer);

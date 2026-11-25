@@ -1,4 +1,5 @@
 pub mod common;
+mod connection_limit;
 pub mod internal;
 mod peer_ip;
 pub mod v2;
@@ -10,17 +11,17 @@ pub use peer_ip::PeerIp;
 use crate::crypto::cert::{fingerprint_from_cert_der, public_key_from_cert_der};
 use crate::http::server::internal::{InternalConfig, InternalState};
 use crate::http::server::v2::ServerEventV2;
-use crate::http::server::web::{WebConfig, WebI18n, WebPages};
+use crate::http::server::web::{WebConfig, WebShare};
 use crate::http::state::ClientInfo;
 use common::client_cert_verifier::CustomClientCertVerifier;
 use common::error::AppError;
 use common::response;
 use common::response::BoxedBody;
 use common::session::SessionStateV2;
+use connection_limit::{ConnectionLimiter, LimitReached, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto::Builder;
+use hyper_util::rt::TokioIo;
 use lru::LruCache;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -29,10 +30,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use web::WebPageState;
+use web::WebState;
 
 /// Configuration for the v2 (legacy) protocol endpoints.
 pub struct ServerConfigV2 {
@@ -71,17 +73,8 @@ pub struct AppState {
     /// Information about server's device.
     info: Arc<Mutex<ClientInfo>>,
 
-    /// State for serving the download page (web send).
-    web: Option<Arc<WebPageState>>,
-
-    /// Whether the upload page is served (when the download page is not active).
-    web_upload: bool,
-
-    /// Translations for the web pages, served via `/i18n.json`.
-    web_i18n: Option<Arc<WebI18n>>,
-
-    /// The HTML pages served to browsers, falling back to the embedded assets.
-    web_pages: Arc<WebPages>,
+    /// Runtime state of the browser-facing pages and web download.
+    web: Arc<WebState>,
 
     /// State for application-internal endpoints.
     internal: Option<Arc<InternalState>>,
@@ -94,6 +87,9 @@ pub struct AppState {
 
     /// State of the v2 protocol endpoints. `None` disables the v2 routes.
     v2: Option<Arc<V2State>>,
+
+    /// Limits the connections being served, shared by the IPv4 and IPv6 listeners.
+    connection_limiter: Arc<ConnectionLimiter>,
 }
 
 impl AppState {
@@ -101,7 +97,7 @@ impl AppState {
         info: Arc<Mutex<ClientInfo>>,
         internal_config: Option<InternalConfig>,
         v2_config: Option<ServerConfigV2>,
-        web_config: Option<WebConfig>,
+        web_config: WebConfig,
     ) -> Self {
         let v2 = v2_config.map(|config| {
             Arc::new(V2State {
@@ -113,23 +109,11 @@ impl AppState {
             })
         });
 
-        let (web, web_upload, web_i18n, web_pages) = match web_config {
-            Some(config) => (
-                config.send.map(|send| Arc::new(WebPageState::new(send))),
-                config.upload,
-                Some(Arc::new(config.i18n)),
-                Arc::new(config.pages),
-            ),
-            None => (None, false, None, Arc::new(WebPages::default())),
-        };
         let internal = internal_config.map(|config| Arc::new(InternalState::new(config)));
 
         Self {
             info,
-            web,
-            web_upload,
-            web_i18n,
-            web_pages,
+            web: Arc::new(WebState::from(web_config)),
             internal,
             received_nonce_map: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(200).unwrap(),
@@ -138,6 +122,7 @@ impl AppState {
                 NonZeroUsize::new(200).unwrap(),
             ))),
             v2,
+            connection_limiter: ConnectionLimiter::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP),
         }
     }
 }
@@ -235,7 +220,7 @@ pub async fn start_with_port(
     info: ClientInfo,
     internal_config: Option<InternalConfig>,
     v2_config: Option<ServerConfigV2>,
-    web_config: Option<WebConfig>,
+    web_config: WebConfig,
     stop_rx: oneshot::Receiver<()>,
 ) -> anyhow::Result<ServerHandle> {
     // Installed before returning, so that a client built right after (which
@@ -350,6 +335,13 @@ const ACCEPT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(1
 /// OS-specific) produces them in an endless, immediate sequence.
 const ACCEPT_FAILURE_LIMIT: u32 = 100;
 
+/// Detects peers that vanished without closing their connections (e.g. left
+/// the network mid-transfer), which would otherwise count towards the
+/// connection limits forever.
+const TCP_KEEPALIVE: socket2::TcpKeepalive = socket2::TcpKeepalive::new()
+    .with_time(std::time::Duration::from_secs(60))
+    .with_interval(std::time::Duration::from_secs(10));
+
 /// Whether the failed accept concerned only the connection being accepted, so
 /// the next one can be attempted right away.
 fn is_transient_accept_error(err: &std::io::Error) -> bool {
@@ -391,7 +383,7 @@ async fn start_server_with_listener(
 ) -> anyhow::Result<()> {
     // Browsers have no client certificate, so presenting one is optional while
     // the web pages are served. A certificate that is presented is still verified.
-    let mandatory_client_auth = app_state.web.is_none() && !app_state.web_upload;
+    let mandatory_client_auth = matches!(app_state.web.share, WebShare::Disabled);
 
     let tls_acceptor = match tls_config {
         Some(tls_config) => Some(
@@ -410,6 +402,7 @@ async fn start_server_with_listener(
 
     let mut accept_backoff = ACCEPT_BACKOFF_MIN;
     let mut accept_failures = 0u32;
+    let mut at_connection_limit = false;
     loop {
         let (tcp_stream, remote_addr) = match incoming.accept().await {
             Ok(accepted) => {
@@ -417,6 +410,7 @@ async fn start_server_with_listener(
                 accept_failures = 0;
                 // Disable Nagle: it delays small responses (reqwest already does this on the client side).
                 let _ = accepted.0.set_nodelay(true);
+                let _ = socket2::SockRef::from(&accepted.0).set_tcp_keepalive(&TCP_KEEPALIVE);
                 accepted
             }
             // Accepting fails for two kinds of reasons that say nothing about
@@ -452,10 +446,34 @@ async fn start_server_with_listener(
             }
         };
 
+        // Dropping the stream closes the connection.
+        let permit = match app_state.connection_limiter.try_acquire(remote_addr.ip()) {
+            Ok(permit) => permit,
+            Err(LimitReached::Total) => {
+                if !at_connection_limit {
+                    tracing::warn!(
+                        "Refusing connections: {MAX_CONNECTIONS} connections are being served"
+                    );
+                    at_connection_limit = true;
+                }
+                continue;
+            }
+            // Debug only: the peer decides how often this happens.
+            Err(LimitReached::PerIp) => {
+                tracing::debug!(
+                    "Refusing connection from {}: {MAX_CONNECTIONS_PER_IP} of its connections are being served",
+                    remote_addr.ip()
+                );
+                continue;
+            }
+        };
+        at_connection_limit = false;
+
         let tls_acceptor = tls_acceptor.clone();
         let app_state = app_state.clone();
         let cancel = cancel.clone();
         connections.spawn(async move {
+            let _permit = permit;
             let serve = serve_connection(tcp_stream, remote_addr, tls_acceptor, app_state);
             tokio::select! {
                 _ = serve => {}
@@ -486,6 +504,7 @@ async fn serve_connection(
                 let (_, server_connection) = tls_stream.get_ref();
                 RequestClientInfo {
                     ip: PeerIp::from_remote_addr(&remote_addr),
+                    tls: true,
                     // No certificate when client auth is optional (web pages served)
                     // and the client (e.g. a browser) did not present one.
                     cert: server_connection
@@ -496,39 +515,44 @@ async fn serve_connection(
                 }
             };
 
-            Builder::new(TokioExecutor::new())
-                .serve_connection(
-                    TokioIo::new(tls_stream),
-                    hyper::service::service_fn(move |mut req: Request<Incoming>| {
-                        req.extensions_mut()
-                            .insert::<RequestClientInfo>(client_info.clone());
-                        req.extensions_mut().insert::<AppState>(app_state.clone());
-                        handle_request(req)
-                    }),
-                )
-                .await
+            serve_http(tls_stream, client_info, app_state).await
         }
         None => {
-            Builder::new(TokioExecutor::new())
-                .serve_connection(
-                    TokioIo::new(tcp_stream),
-                    hyper::service::service_fn(move |mut req: Request<Incoming>| {
-                        req.extensions_mut()
-                            .insert::<RequestClientInfo>(RequestClientInfo {
-                                ip: PeerIp::from_remote_addr(&remote_addr),
-                                cert: None,
-                            });
-                        req.extensions_mut().insert::<AppState>(app_state.clone());
-                        handle_request(req)
-                    }),
-                )
-                .await
+            let client_info = RequestClientInfo {
+                ip: PeerIp::from_remote_addr(&remote_addr),
+                tls: false,
+                cert: None,
+            };
+            serve_http(tcp_stream, client_info, app_state).await
         }
     };
 
     if let Err(err) = res {
         tracing::warn!("Failed to serve connection: {err:#}");
     }
+}
+
+/// Serves HTTP/1.1 only: HTTP/2 multiplexes many requests over one connection,
+/// so the connection limits would no longer bound the requests of a peer.
+async fn serve_http<I>(
+    io: I,
+    client_info: RequestClientInfo,
+    app_state: AppState,
+) -> hyper::Result<()>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(
+            TokioIo::new(io),
+            hyper::service::service_fn(move |mut req: Request<Incoming>| {
+                req.extensions_mut()
+                    .insert::<RequestClientInfo>(client_info.clone());
+                req.extensions_mut().insert::<AppState>(app_state.clone());
+                handle_request(req)
+            }),
+        )
+        .await
 }
 
 fn create_tls_config(
@@ -554,16 +578,30 @@ pub struct RequestClientInfo {
     /// The IP address of the client, including the IPv6 scope when present.
     ip: PeerIp,
 
+    /// Whether the connection uses TLS.
+    tls: bool,
+
     /// The client certificate in DER format.
+    /// `None` without TLS, or on TLS when the client presented no certificate
+    /// (only possible while the web pages are served).
     cert: Option<Vec<u8>>,
 }
 
 impl RequestClientInfo {
-    /// The SHA-256 fingerprint (uppercase hex) of the client certificate
-    /// verified during the mTLS handshake.
-    /// `None` when the server runs without TLS.
-    fn cert_fingerprint(&self) -> Option<String> {
-        self.cert.as_deref().map(fingerprint_from_cert_der)
+    /// The fingerprint identifying the client, given the one it `claimed`:
+    /// - TLS with a client certificate: the SHA-256 fingerprint (uppercase hex)
+    ///   of that certificate, verified during the mTLS handshake.
+    /// - Plain HTTP: the claimed fingerprint, as there is nothing to verify it
+    ///   against (encryption is turned off).
+    /// - TLS without a client certificate (e.g. a browser while the web pages
+    ///   are served): `None`, the client is anonymous. Its claimed fingerprint
+    ///   must not be trusted, otherwise it could impersonate any device.
+    fn sender_fingerprint(&self, claimed: &str) -> Option<String> {
+        match (&self.cert, self.tls) {
+            (Some(cert), _) => Some(fingerprint_from_cert_der(cert)),
+            (None, false) => Some(claimed.to_string()),
+            (None, true) => None,
+        }
     }
 
     fn extract_public_key(&self) -> Option<String> {

@@ -2,15 +2,17 @@
 
 use bytes::Bytes;
 use futures_util::StreamExt;
+use localsend::crypto::cert::fingerprint_from_cert_der;
 use localsend::crypto::hash::sha256_hex;
-use localsend::http::client::{ClientError, LsHttpClientV2};
+use localsend::http::client::{ClientError, LsHttpClient, LsHttpClientV2};
 use localsend::http::dto_v2::{PrepareUploadRequestDtoV2, RegisterDtoV2};
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2, SessionEndReasonV2};
+use localsend::http::server::web::WebConfig;
 use localsend::http::server::{start_with_port, ServerConfigV2};
 use localsend::http::state::ClientInfo;
 use localsend::model::discovery::ProtocolType;
-use localsend::model::transfer::{FileDto, FileMetadata};
+use localsend::model::transfer::{FileContent, FileDto, FileMetadata};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -141,7 +143,7 @@ async fn start_test_server_with_verification(
             verify_checksums,
             event_tx,
         }),
-        None,
+        WebConfig::default(),
         stop_rx,
     )
     .await
@@ -792,6 +794,74 @@ async fn test_upload_saved_to_path_by_server() {
     let _ = tokio::fs::remove_dir_all(&save_dir).await;
 }
 
+/// A source file the sender cannot read must fail the upload instead of being
+/// sent as an empty body.
+///
+/// The receiver creates the destination before the first byte arrives, so an
+/// upload that silently ends without data leaves a 0-byte file behind while
+/// the sender streamed a well-formed, complete-looking request.
+#[tokio::test]
+async fn test_upload_of_unreadable_file_fails_instead_of_sending_an_empty_body() {
+    let save_dir = std::env::temp_dir().join(format!("localsend-test-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&save_dir).await.unwrap();
+
+    let server = start_test_server(None, true, Some(save_dir.clone())).await;
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+
+    let file = file_dto("file-a", "a.bin", 5);
+    let result = client
+        .prepare_upload(
+            ProtocolType::Http,
+            "127.0.0.1",
+            server.port,
+            None,
+            prepare_upload_request(&[file]),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let response = result.response.unwrap();
+
+    // The source is gone by the time the upload starts, as an OS-managed
+    // temporary copy of a picked file can be.
+    let missing = save_dir.join("source-is-gone.bin");
+    let result = LsHttpClient::V2(client)
+        .upload(
+            ProtocolType::Http,
+            "127.0.0.1",
+            server.port,
+            None,
+            &response.session_id,
+            "file-a",
+            &response.files["file-a"],
+            FileContent::Path(missing),
+            |_| {},
+            CancellationToken::new(),
+        )
+        .await;
+
+    // The sender has to fail on its own. A status code here would mean the
+    // empty body was sent and only the receiver objected, which is exactly the
+    // behaviour this fixes - and it would still be an `Err`, so asserting
+    // `is_err()` alone would not catch a regression.
+    match result {
+        Err(ClientError::StatusCode(err)) => panic!(
+            "the empty body reached the receiver, which rejected it with {}; \
+             the sender should have failed before sending anything",
+            err.status
+        ),
+        Ok(()) => panic!("an unreadable source must not produce a successful upload"),
+        Err(_) => {}
+    }
+
+    // The receiver must not have stored the file as completely received.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!server.received.lock().await.contains_key("file-a"));
+
+    let _ = tokio::fs::remove_dir_all(&save_dir).await;
+}
+
 #[tokio::test]
 async fn test_upload_with_invalid_token() {
     let server = start_test_server(None, true, None).await;
@@ -974,7 +1044,7 @@ async fn test_prepare_upload_aborted_by_sender_disconnect() {
             verify_checksums: true,
             event_tx,
         }),
-        None,
+        WebConfig::default(),
         stop_rx,
     )
     .await
@@ -1076,7 +1146,7 @@ async fn test_prepare_upload_cancelled_by_session_less_cancel() {
             verify_checksums: true,
             event_tx,
         }),
-        None,
+        WebConfig::default(),
         stop_rx,
     )
     .await
@@ -1211,7 +1281,7 @@ async fn test_prepare_upload_aborted_by_sender_disconnect_tls() {
             verify_checksums: true,
             event_tx,
         }),
-        None,
+        WebConfig::default(),
         stop_rx,
     )
     .await
@@ -1223,6 +1293,9 @@ async fn test_prepare_upload_aborted_by_sender_disconnect_tls() {
     let client =
         LsHttpClientV2::try_new(&sender_key.serialize_pem(), &sender_cert.pem(), None, None)
             .unwrap();
+    // On TLS, the sender must claim the fingerprint of its certificate.
+    let mut request = prepare_upload_request(&[file_dto("file-a", "a.bin", 5)]);
+    request.info.fingerprint = fingerprint_from_cert_der(sender_cert.der());
     let cancel = CancellationToken::new();
     tokio::spawn({
         let cancel = cancel.clone();
@@ -1237,7 +1310,7 @@ async fn test_prepare_upload_aborted_by_sender_disconnect_tls() {
             "127.0.0.1",
             port,
             None,
-            prepare_upload_request(&[file_dto("file-a", "a.bin", 5)]),
+            request,
             None,
             cancel,
         )
@@ -1305,6 +1378,64 @@ async fn test_prepare_upload_declined() {
         )
         .await;
     assert_status(result, 403);
+}
+
+/// macOS sends NFD names; the app must only ever see NFC (e.g. Korean as
+/// precomposed syllables instead of separate jamo).
+#[tokio::test]
+async fn test_prepare_upload_normalizes_file_names_to_nfc() {
+    let (event_tx, mut event_rx) = mpsc::channel::<ServerEventV2>(16);
+    let (_stop_tx, stop_rx) = oneshot::channel::<()>();
+    let handle = start_with_port(
+        0,
+        None,
+        ClientInfo {
+            alias: "Test Server".to_string(),
+            version: "2.2".to_string(),
+            device_model: None,
+            device_type: None,
+            token: "server-fingerprint".to_string(),
+        },
+        None,
+        Some(ServerConfigV2 {
+            pin: None,
+            verify_checksums: true,
+            event_tx,
+        }),
+        WebConfig::default(),
+        stop_rx,
+    )
+    .await
+    .expect("Failed to start server");
+
+    // "오삐한테" as decomposed jamo, inside a folder.
+    let nfd = "dir/\u{110B}\u{1169}\u{1108}\u{1175}\u{1112}\u{1161}\u{11AB}\u{1110}\u{1166}.txt";
+    let client = LsHttpClientV2::try_new_without_cert().unwrap();
+    let request = client.prepare_upload(
+        ProtocolType::Http,
+        "127.0.0.1",
+        handle.port(),
+        None,
+        prepare_upload_request(&[file_dto("file-a", nfd, 5)]),
+        None,
+        CancellationToken::new(),
+    );
+
+    let observe = async {
+        loop {
+            if let Some(ServerEventV2::PrepareUpload {
+                files, decision_tx, ..
+            }) = event_rx.recv().await
+            {
+                let _ = decision_tx.send(PrepareUploadDecisionV2::Decline);
+                return files["file-a"].file_name.clone();
+            }
+        }
+    };
+
+    let (result, file_name) = tokio::join!(request, observe);
+    assert_status(result, 403);
+    assert_eq!(file_name, "dir/오삐한테.txt");
 }
 
 #[tokio::test]
