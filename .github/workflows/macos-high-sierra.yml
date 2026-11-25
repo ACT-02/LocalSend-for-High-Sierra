@@ -562,16 +562,59 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          PUB_CACHE_ROOT="${PUB_CACHE:-$HOME/.pub-cache}"
-          GAL_SWIFT="$(find "$PUB_CACHE_ROOT" -type f -path '*/gal-2.3.3/darwin/gal/Sources/gal/GalPlugin.swift' -print -quit)"
-          if [ -z "$GAL_SWIFT" ]; then
-            echo "ERROR: GalPlugin.swift not found."
-            exit 1
+          # Resolve the plugin actually selected by pub, not an older cached version.
+          GAL_SWIFT="$(
+            python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("app/.flutter-plugins-dependencies").read_text())
+          plugins = [
+              plugin for plugin in data.get("plugins", {}).get("macos", [])
+              if plugin.get("name") == "gal"
+          ]
+          if len(plugins) != 1 or not plugins[0].get("path"):
+              raise SystemExit("ERROR: Expected one gal plugin in the macOS plugin graph.")
+
+          plugin = plugins[0]
+          platform_dir = "darwin" if plugin.get("shared_darwin_source", False) else "macos"
+          source = Path(plugin["path"]) / platform_dir / "gal/Sources/gal/GalPlugin.swift"
+          if not source.is_file():
+              raise SystemExit(f"ERROR: Selected gal plugin source not found: {source}")
+          print(source)
+          PY
+          )"
+
+          GAL_PERMISSION_ERROR="$(
+            python3 - "$GAL_SWIFT" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text()
+          cases = re.findall(r'\bcase\s+((?:"[^"]+"\s*,?\s*)+):', text)
+          methods = set(re.findall(r'"([^"]+)"', " ".join(cases)))
+          media_methods = {"putVideo", "putImage", "putImageBytes", "open"}
+          if methods == media_methods | {"hasAccess", "requestAccess"}:
+              print("ACCESS_DENIED")
+          elif methods == media_methods | {"hasPermission", "requestPermission"}:
+              print("PERMISSION_DENIED")
+          else:
+              raise SystemExit(f"ERROR: Unsupported gal method-channel API: {sorted(methods)}")
+          PY
+          )"
+
+          if [ "$GAL_PERMISSION_ERROR" = "PERMISSION_DENIED" ]; then
+            GAL_PERMISSION_CASES='"hasPermission", "requestPermission"'
+          else
+            GAL_PERMISSION_CASES='"hasAccess", "requestAccess"'
           fi
 
-          cp "$GAL_SWIFT" "${GAL_SWIFT}.original"
+          if [ ! -f "${GAL_SWIFT}.original" ]; then
+            cp "$GAL_SWIFT" "${GAL_SWIFT}.original"
+          fi
 
-          cat > "$GAL_SWIFT" <<'SWIFT'
+          cat > "$GAL_SWIFT" <<SWIFT
           import Cocoa
           import FlutterMacOS
 
@@ -589,12 +632,12 @@ jobs:
               result: @escaping FlutterResult
             ) {
               switch call.method {
-              case "hasAccess", "requestAccess":
+              case $GAL_PERMISSION_CASES:
                 result(false)
               case "putVideo", "putImage", "putImageBytes":
                 result(
                   FlutterError(
-                    code: "ACCESS_DENIED",
+                    code: "$GAL_PERMISSION_ERROR",
                     message: "Direct Photos-library saving is unavailable in the macOS High Sierra build.",
                     details: nil
                   )
