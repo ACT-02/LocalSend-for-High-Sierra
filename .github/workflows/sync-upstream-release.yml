@@ -3,6 +3,8 @@ name: Sync upstream LocalSend releases
 
 on:
   push:
+    branches:
+      - main
     paths:
       - ".github/workflows/sync-upstream-release.yml"
   schedule:
@@ -31,12 +33,14 @@ concurrency:
 jobs:
   sync:
     name: Sync latest official release and start High Sierra backport
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout High Sierra repository
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           submodules: false
 
@@ -63,27 +67,40 @@ jobs:
           fi
 
           curl --fail --silent --show-error --location \
+            --retry 3 --retry-connrefused --retry-max-time 120 \
+            --connect-timeout 15 --max-time 60 \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$RELEASE_URL" > "$RUNNER_TEMP/localsend-release.json"
+            --output "$RUNNER_TEMP/localsend-release.json" \
+            "$RELEASE_URL"
 
-          TAG="$(awk -F'"' '/"tag_name"/ {print $4; exit}' "$RUNNER_TEMP/localsend-release.json")"
-          DRAFT="$(awk -F': ' '/"draft"/ {gsub(/[, ]/,"",$2); print $2; exit}' "$RUNNER_TEMP/localsend-release.json")"
-          PRERELEASE="$(awk -F': ' '/"prerelease"/ {gsub(/[, ]/,"",$2); print $2; exit}' "$RUNNER_TEMP/localsend-release.json")"
+          TAG="$(
+            python3 - "$RUNNER_TEMP/localsend-release.json" <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
 
-          if [ -z "$TAG" ]; then
-            echo "ERROR: official release has no tag_name."
-            exit 1
-          fi
-          if [ "$DRAFT" = "true" ]; then
-            echo "ERROR: refusing to synchronize a draft release."
-            exit 1
-          fi
-          if [ "$PRERELEASE" = "true" ]; then
-            echo "ERROR: refusing to synchronize a prerelease."
-            exit 1
-          fi
+          release = json.loads(Path(sys.argv[1]).read_text())
+          if not isinstance(release, dict):
+              raise SystemExit("ERROR: official release response must be a JSON object.")
+          tag = release.get("tag_name")
+          if not isinstance(tag, str) or not re.fullmatch(
+              r"v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z][0-9A-Za-z.-]*)?", tag
+          ):
+              raise SystemExit("ERROR: official release has an invalid tag_name.")
+          if release.get("draft") is not False:
+              raise SystemExit("ERROR: official release must explicitly have draft=false.")
+          if release.get("prerelease") is not False:
+              raise SystemExit("ERROR: official release must explicitly have prerelease=false.")
+          requested = os.environ.get("REQUESTED_TAG", "")
+          if requested and tag != requested:
+              raise SystemExit(f"ERROR: requested tag {requested} does not match response tag {tag}.")
+          print(tag)
+          PY
+          )"
 
           CURRENT=""
           if [ -s .high-sierra/last-synced-release.txt ]; then
@@ -250,16 +267,127 @@ jobs:
           git reset --hard "$NEW_COMMIT"
           git push origin "$NEW_COMMIT:refs/heads/main"
 
-      - name: Start High Sierra backport build and release
-        if: steps.release.outputs.changed == 'true'
+      - name: Ensure High Sierra backport build and release was requested
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          FORCE_SYNC: ${{ inputs.force_sync || false }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
+          HEAD_SHA="$(git rev-parse HEAD)"
+
+          if [ "${FORCE_SYNC}" != "true" ]; then
+            # Only a real 404 means no published release exists; API failures must stop here.
+            HTTP_STATUS="$(
+              curl --silent --show-error --location \
+                --retry 3 --retry-connrefused --retry-max-time 120 \
+                --connect-timeout 15 --max-time 60 \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                --output "$RUNNER_TEMP/high-sierra-release.json" \
+                --write-out '%{http_code}' \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG"
+            )"
+
+            case "$HTTP_STATUS" in
+              200)
+                RELEASE_COMPLETE="$(
+                  python3 - "$RUNNER_TEMP/high-sierra-release.json" "$TAG" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          release = json.loads(Path(sys.argv[1]).read_text())
+          tag = sys.argv[2]
+          if not isinstance(release, dict) or release.get("tag_name") != tag:
+              raise SystemExit("ERROR: High Sierra release response has an unexpected tag.")
+          if any(type(release.get(key)) is not bool for key in ("draft", "prerelease")):
+              raise SystemExit("ERROR: High Sierra release response has invalid release flags.")
+          assets = release.get("assets")
+          if not isinstance(assets, list) or any(
+              not isinstance(asset, dict)
+              or not isinstance(asset.get("name"), str)
+              or not isinstance(asset.get("state"), str)
+              or type(asset.get("size")) is not int
+              or asset["size"] < 0
+              for asset in assets
+          ):
+              raise SystemExit("ERROR: High Sierra release response has invalid assets.")
+          archive = f"LocalSend-{tag[1:]}-macOS-High-Sierra-10.13-x86_64.zip"
+          expected = {archive, f"{archive}.sha256"}
+          uploaded = {
+              asset["name"] for asset in assets
+              if asset["state"] == "uploaded" and asset["size"] > 0
+          }
+          complete = not release["draft"] and not release["prerelease"] and expected <= uploaded
+          print("true" if complete else "false")
+          PY
+                )"
+                if [ "$RELEASE_COMPLETE" = "true" ]; then
+                  echo "High Sierra $TAG is already published with its archive and checksum."
+                  exit 0
+                fi
+                ;;
+              404) ;;
+              *)
+                echo "ERROR: High Sierra release lookup returned HTTP $HTTP_STATUS."
+                exit 1
+                ;;
+            esac
+          fi
+
+          find_existing_build() {
+            if ! gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow macos-high-sierra.yml --all \
+              --branch main --commit "$HEAD_SHA" --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId,headSha,headBranch,event,status,conclusion,url \
+              > "$RUNNER_TEMP/high-sierra-build-runs.json"; then
+              echo "ERROR: could not check existing High Sierra build requests." >&2
+              return 1
+            fi
+
+            python3 - "$RUNNER_TEMP/high-sierra-build-runs.json" "$HEAD_SHA" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          runs = json.loads(Path(sys.argv[1]).read_text())
+          if not isinstance(runs, list):
+              raise SystemExit("ERROR: build request response must be a JSON array.")
+          for run in runs:
+              if not isinstance(run, dict) or (
+                  run.get("headSha") != sys.argv[2]
+                  or run.get("headBranch") != "main"
+                  or run.get("event") != "workflow_dispatch"
+                  or type(run.get("databaseId")) is not int
+                  or run["databaseId"] <= 0
+              ):
+                  raise SystemExit("ERROR: build request response does not match this source commit.")
+          if runs:
+              # A failed or cancelled build still counts: compatibility failures need a manual fix.
+              print(f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{runs[0]['databaseId']}")
+          PY
+          }
 
           for attempt in 1 2 3 4 5; do
+            EXISTING_BUILD="$(find_existing_build)"
+            if [ -n "$EXISTING_BUILD" ]; then
+              echo "High Sierra build already requested for $HEAD_SHA: $EXISTING_BUILD"
+              exit 0
+            fi
+
+            REMOTE_HEAD="$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+            if [ "$REMOTE_HEAD" != "$HEAD_SHA" ]; then
+              echo "ERROR: main changed from $HEAD_SHA to $REMOTE_HEAD; refusing to dispatch a different source commit."
+              exit 1
+            fi
+
             if gh workflow run macos-high-sierra.yml \
               --repo "$GITHUB_REPOSITORY" \
               --ref main \
@@ -269,8 +397,10 @@ jobs:
               exit 0
             fi
 
-            echo "Workflow dispatch attempt $attempt failed; retrying."
-            sleep 5
+            if [ "$attempt" -lt 5 ]; then
+              echo "Workflow dispatch attempt $attempt failed; rechecking before retrying."
+              sleep 5
+            fi
           done
 
           echo "ERROR: failed to dispatch High Sierra backport workflow."

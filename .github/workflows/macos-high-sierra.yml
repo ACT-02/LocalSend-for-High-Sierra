@@ -17,7 +17,7 @@ on:
         default: ""
         type: string
       publish_release:
-        description: "Publish or update the High Sierra GitHub Release after all validation passes"
+        description: "Publish or resume a High Sierra release after validation; keep complete published releases"
         required: true
         default: false
         type: boolean
@@ -30,6 +30,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ ((github.event_name == 'workflow_dispatch' && inputs.publish_release) || (github.event_name == 'push' && github.event.head_commit.message == 'Publish current High Sierra release')) && 'high-sierra-release-publication' || format('high-sierra-validation-{0}', github.sha) }}
+  cancel-in-progress: false
+
 env:
   FLUTTER_VERSION: "3.41.9"
   RUST_VERSION: "1.97.1"
@@ -37,7 +41,7 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "10.13"
   NATIVE_ASSETS_STRATEGY: ${{ inputs.native_assets_strategy || 'native-backport' }}
   REQUESTED_UPSTREAM_TAG: ${{ inputs.upstream_tag || '' }}
-  PUBLISH_RELEASE: ${{ inputs.publish_release || false }}
+  PUBLISH_RELEASE: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_release) || (github.event_name == 'push' && github.event.head_commit.message == 'Publish current High Sierra release') }}
 
 jobs:
   build:
@@ -57,12 +61,35 @@ jobs:
 
           MARKER=".high-sierra/last-synced-release.txt"
           SOURCE_KIND_FILE=".high-sierra/source-kind.txt"
+          SOURCE_BASE_FILE=".high-sierra/source-base.txt"
 
           test -s "$MARKER"
           test -s "$SOURCE_KIND_FILE"
+          test -s "$SOURCE_BASE_FILE"
 
           UPSTREAM_RELEASE_TAG="$(tr -d '\r\n' < "$MARKER")"
           HIGH_SIERRA_SOURCE_KIND="$(tr -d '\r\n' < "$SOURCE_KIND_FILE")"
+          UPSTREAM_SOURCE_COMMIT="$(tr -d '\r' < "$SOURCE_BASE_FILE")"
+          HIGH_SIERRA_BUILD_COMMIT="$(git rev-parse HEAD)"
+
+          if ! [[ "$UPSTREAM_SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "ERROR: source-base.txt must contain one full 40-character commit SHA."
+            exit 1
+          fi
+          UPSTREAM_SOURCE_COMMIT="$(printf '%s' "$UPSTREAM_SOURCE_COMMIT" | tr 'A-F' 'a-f')"
+
+          if ! [[ "$UPSTREAM_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "ERROR: invalid official LocalSend release tag: $UPSTREAM_RELEASE_TAG"
+            exit 1
+          fi
+
+          case "$HIGH_SIERRA_SOURCE_KIND" in
+            official-release|upstream-main-baseline) ;;
+            *)
+              echo "ERROR: unknown High Sierra source kind: $HIGH_SIERRA_SOURCE_KIND"
+              exit 1
+              ;;
+          esac
 
           APP_VERSION="$(
             python3 <<'PY'
@@ -96,6 +123,17 @@ jobs:
             exit 1
           fi
 
+          if [ "$HIGH_SIERRA_SOURCE_KIND" = "official-release" ]; then
+            git fetch --force --no-tags --depth=1 \
+              https://github.com/localsend/localsend.git \
+              "refs/tags/${UPSTREAM_RELEASE_TAG}:refs/tags/__high_sierra_verified_upstream"
+            VERIFIED_UPSTREAM_COMMIT="$(git rev-parse 'refs/tags/__high_sierra_verified_upstream^{commit}')"
+            if [ "$VERIFIED_UPSTREAM_COMMIT" != "$UPSTREAM_SOURCE_COMMIT" ]; then
+              echo "ERROR: source-base.txt records $UPSTREAM_SOURCE_COMMIT, but official $UPSTREAM_RELEASE_TAG resolves to $VERIFIED_UPSTREAM_COMMIT."
+              exit 1
+            fi
+          fi
+
           HIGH_SIERRA_RELEASE_TAG="${UPSTREAM_RELEASE_TAG}"
           HIGH_SIERRA_ASSET_BASENAME="LocalSend-${APP_RELEASE_VERSION}-macOS-High-Sierra-10.13-x86_64"
 
@@ -104,11 +142,27 @@ jobs:
             echo "APP_VERSION=$APP_VERSION"
             echo "APP_RELEASE_VERSION=$APP_RELEASE_VERSION"
             echo "HIGH_SIERRA_SOURCE_KIND=$HIGH_SIERRA_SOURCE_KIND"
+            echo "UPSTREAM_SOURCE_COMMIT=$UPSTREAM_SOURCE_COMMIT"
+            echo "HIGH_SIERRA_BUILD_COMMIT=$HIGH_SIERRA_BUILD_COMMIT"
             echo "HIGH_SIERRA_RELEASE_TAG=$HIGH_SIERRA_RELEASE_TAG"
             echo "HIGH_SIERRA_ASSET_BASENAME=$HIGH_SIERRA_ASSET_BASENAME"
           } >> "$GITHUB_ENV"
 
+          mkdir -p diagnostics
+          python3 - "$UPSTREAM_RELEASE_TAG" "$UPSTREAM_SOURCE_COMMIT" "$HIGH_SIERRA_BUILD_COMMIT" "$HIGH_SIERRA_SOURCE_KIND" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          keys = ("upstream_tag", "upstream_commit", "build_commit", "source_kind")
+          Path("diagnostics/source-provenance.json").write_text(
+              json.dumps(dict(zip(keys, sys.argv[1:])), indent=2) + "\n"
+          )
+          PY
+
           echo "Upstream release tag: $UPSTREAM_RELEASE_TAG"
+          echo "Upstream source commit: $UPSTREAM_SOURCE_COMMIT"
+          echo "High Sierra build commit: $HIGH_SIERRA_BUILD_COMMIT"
           echo "Source kind: $HIGH_SIERRA_SOURCE_KIND"
           echo "High Sierra release tag: $HIGH_SIERRA_RELEASE_TAG"
           echo "Release asset basename: $HIGH_SIERRA_ASSET_BASENAME"
@@ -166,6 +220,19 @@ jobs:
         run: |
           set -euxo pipefail
           flutter --version
+          mkdir -p diagnostics
+          flutter --version --machine > diagnostics/flutter-version.json
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          actual = json.loads(Path("diagnostics/flutter-version.json").read_text()).get("frameworkVersion")
+          expected = os.environ["FLUTTER_VERSION"]
+          if actual != expected:
+              raise SystemExit(f"ERROR: Flutter version {actual!r} does not match the pinned {expected!r}.")
+          print(f"PASS: using pinned Flutter {actual}; exact engine byte checks remain required.")
+          PY
           dart --version
           rustc --version
           cargo --version
@@ -184,6 +251,7 @@ jobs:
           set -euxo pipefail
 
           python3 <<'PY'
+          import re
           from pathlib import Path
 
           pubspec = Path("app/pubspec.yaml")
@@ -192,9 +260,9 @@ jobs:
           if not marked:
               raise SystemExit("ERROR: No # [FOSS_REMOVE] dependency found.")
 
-          pubspec.write_text(
-              "\n".join(line for line in lines if "# [FOSS_REMOVE]" not in line) + "\n"
-          )
+          updates = {
+              pubspec: "\n".join(line for line in lines if "# [FOSS_REMOVE]" not in line) + "\n"
+          }
 
           for path in [
               Path("app/lib/config/init.dart"),
@@ -204,26 +272,37 @@ jobs:
               text = path.read_text()
               if "// [FOSS_REMOVE_START]" not in text or "// [FOSS_REMOVE_END]" not in text:
                   raise SystemExit(f"ERROR: FOSS block markers missing in {path}")
-              path.write_text(
+              inside_block = False
+              for marker in re.finditer(r"// \[FOSS_REMOVE_(START|END)\]", text):
+                  is_start = marker.group(1) == "START"
+                  if is_start == inside_block:
+                      line = text.count("\n", 0, marker.start()) + 1
+                      raise SystemExit(f"ERROR: Unpaired or nested FOSS marker in {path}:{line}")
+                  inside_block = is_start
+              if inside_block:
+                  raise SystemExit(f"ERROR: Unclosed FOSS block in {path}")
+              updates[path] = (
                   text.replace("// [FOSS_REMOVE_START]", "/*")
                       .replace("// [FOSS_REMOVE_END]", "*/")
               )
 
           provider = Path("app/lib/provider/purchase_provider.dart")
-          if not provider.exists():
+          if not provider.is_file():
               raise SystemExit("ERROR: purchase_provider.dart missing.")
-          provider.unlink()
 
           donation = Path("app/lib/pages/donation/donation_page.dart")
-          donation.write_text(
-              donation.read_text().replace(
-                  "donationPageVmProvider",
-                  "donationPageNoopVmProvider",
-              )
+          updates[donation] = updates[donation].replace(
+              "donationPageVmProvider",
+              "donationPageNoopVmProvider",
           )
 
-          if "in_app_purchase:" in pubspec.read_text():
+          if "in_app_purchase:" in updates[pubspec]:
               raise SystemExit("ERROR: in_app_purchase remains in pubspec.yaml.")
+
+          # Validate every input before changing any source file.
+          for path, text in updates.items():
+              path.write_text(text)
+          provider.unlink()
           PY
 
           rm -f app/macos/Podfile.lock
@@ -300,70 +379,48 @@ jobs:
           set -euxo pipefail
           mkdir -p diagnostics
 
-          # Do not resolve objective_c through .dart_tool/package_config.json here.
-          # The package is a Dart Native Asset dependency rather than a normal
-          # Flutter macOS plugin, and all we need is the exact cached 9.5.0
-          # package that flutter pub get has already fetched.
-          #
-          # Searching the Pub cache directly also avoids URI/path corruption
-          # from package_config handling and gives us deterministic diagnostics.
-          PUB_CACHE_ROOT="${PUB_CACHE:-$HOME/.pub-cache}"
-
-          echo "Pub cache root: $PUB_CACHE_ROOT"
-          test -d "$PUB_CACHE_ROOT"
-
-          CANDIDATES_FILE="diagnostics/objective_c-candidates.txt"
-          : > "$CANDIDATES_FILE"
-
-          find "$PUB_CACHE_ROOT" \
-            -type f \
-            -path '*/objective_c-9.5.0/hook/build.dart' \
-            -print \
-            | sort \
-            | tee "$CANDIDATES_FILE"
-
-          if [ ! -s "$CANDIDATES_FILE" ]; then
-            echo "ERROR: objective_c 9.5.0 hook/build.dart was not found in the Pub cache."
-            echo "Nearby objective_c cache entries:"
-            find "$PUB_CACHE_ROOT" \
-              -maxdepth 5 \
-              -iname '*objective_c*' \
-              -print \
-              | sort \
-              | head -200 \
-              || true
-            exit 1
+          # Pub workspaces write their shared package config at the repository
+          # root. Resolve the selected dependency rather than scanning stale
+          # Pub cache entries. Keep support for a standalone app package.
+          OBJECTIVE_C_PACKAGE_CONFIG=".dart_tool/package_config.json"
+          if [ ! -f "$OBJECTIVE_C_PACKAGE_CONFIG" ]; then
+            OBJECTIVE_C_PACKAGE_CONFIG="app/.dart_tool/package_config.json"
           fi
+          test -f "$OBJECTIVE_C_PACKAGE_CONFIG"
 
-          # Select the candidate in Python rather than using Bash 4-only
-          # helpers such as mapfile. GitHub's macOS /bin/bash is still 3.2.
           HOOK="$(
-            python3 - "$CANDIDATES_FILE" <<'PY'
+            python3 - "$OBJECTIVE_C_PACKAGE_CONFIG" <<'PY'
+          import json
           import sys
           from pathlib import Path
+          from urllib.parse import urljoin, urlsplit
+          from urllib.request import url2pathname
 
-          candidates = [
-              line.strip()
-              for line in Path(sys.argv[1]).read_text().splitlines()
-              if line.strip()
+          config = Path(sys.argv[1]).resolve()
+          data = json.loads(config.read_text())
+          if data.get("configVersion") != 2:
+              raise SystemExit(f"ERROR: Unsupported package config format in {config}")
+          packages = [
+              package for package in data.get("packages", [])
+              if package.get("name") == "objective_c"
           ]
-
-          canonical = [
-              candidate
-              for candidate in candidates
-              if "/hosted/pub.dev/objective_c-9.5.0/hook/build.dart" in candidate
-          ]
-
-          if len(canonical) == 1:
-              print(canonical[0])
-          elif len(candidates) == 1:
-              print(candidates[0])
-          else:
+          if len(packages) != 1:
+              raise SystemExit("ERROR: Expected one resolved objective_c package.")
+          root_uri = packages[0].get("rootUri")
+          if not isinstance(root_uri, str) or not root_uri:
+              raise SystemExit("ERROR: objective_c has no valid rootUri.")
+          resolved = urlsplit(urljoin(config.as_uri(), root_uri))
+          if (
+              resolved.scheme != "file"
+              or resolved.netloc not in ("", "localhost")
+              or resolved.query
+              or resolved.fragment
+          ):
               raise SystemExit(
-                  "ERROR: Multiple objective_c 9.5.0 hook candidates were found "
-                  "and no unique canonical hosted/pub.dev copy could be selected:\n  "
-                  + "\n  ".join(candidates)
+                  f"ERROR: objective_c rootUri must resolve to a local file URI: {root_uri}"
               )
+          root = Path(url2pathname(resolved.path)).resolve()
+          print(root / "hook/build.dart")
           PY
           )"
 
@@ -379,6 +436,9 @@ jobs:
           printf '%s\n' "$HOOK" \
             > diagnostics/objective_c-hook.txt
 
+          printf '%s\n' "$OBJECTIVE_C_PACKAGE_CONFIG" \
+            > diagnostics/objective_c-package-config.txt
+
           test -d "$OBJECTIVE_C_ROOT"
           test -f "$HOOK"
           test -f "$PUBSPEC"
@@ -390,10 +450,13 @@ jobs:
           from pathlib import Path
 
           text = Path(sys.argv[1]).read_text()
-          match = re.search(r"(?m)^version:\s*([^\s]+)\s*$", text)
-          if not match:
-              raise SystemExit("ERROR: objective_c package version not found.")
-          print(match.group(1))
+          names = re.findall(r"(?m)^name:\s*([^\s]+)\s*$", text)
+          if names != ["objective_c"]:
+              raise SystemExit("ERROR: Resolved objective_c package has an unexpected name.")
+          versions = re.findall(r"(?m)^version:\s*([^\s]+)\s*$", text)
+          if len(versions) != 1:
+              raise SystemExit("ERROR: Expected one objective_c package version.")
+          print(versions[0])
           PY
           )"
 
@@ -404,46 +467,60 @@ jobs:
             exit 1
           fi
 
-          cp "$HOOK" diagnostics/objective_c-build.dart.original
-
           python3 - "$HOOK" <<'PY'
           import re
+          import shutil
           import sys
           from pathlib import Path
 
           path = Path(sys.argv[1])
           text = path.read_text()
 
-          pattern = re.compile(
-              r"(\s*assert\(codeConfig\.targetOS == OS\.macOS\);\s*)"
-              r"final targetVersion = codeConfig\.macOS\.targetVersion;\s*"
-              r"return '-mmacos-version-min=\$targetVersion';"
+          original_function = (
+              "String minOSVersion(CodeConfig codeConfig) {\n"
+              "  if (codeConfig.targetOS == OS.iOS) {\n"
+              "    final targetVersion = codeConfig.iOS.targetVersion;\n"
+              "    return '-mios-version-min=$targetVersion';\n"
+              "  }\n"
+              "  assert(codeConfig.targetOS == OS.macOS);\n"
+              "  final targetVersion = codeConfig.macOS.targetVersion;\n"
+              "  return '-mmacos-version-min=$targetVersion';\n"
+              "}"
           )
-
-          replacement = (
-              r"\1"
-              "// LocalSend High Sierra backport: Native Assets only expose an integer "
+          patched_function = original_function.replace(
+              "  final targetVersion = codeConfig.macOS.targetVersion;\n"
+              "  return '-mmacos-version-min=$targetVersion';",
+              "  // LocalSend High Sierra backport: Native Assets only expose an integer "
               "macOS targetVersion, so force the real clang deployment target here.\n"
-              "  return '-mmacos-version-min=10.13';"
+              "  return '-mmacos-version-min=10.13';",
           )
 
-          patched, count = pattern.subn(replacement, text, count=1)
-
-          if count != 1:
+          declarations = re.findall(r"(?m)^\s*String\s+minOSVersion\s*\(", text)
+          state = (text.count(original_function), text.count(patched_function))
+          if len(declarations) != 1 or state not in ((1, 0), (0, 1)):
               raise SystemExit(
-                  "ERROR: objective_c 9.5.0 minOSVersion() structure did not match expected source."
+                  "ERROR: objective_c 9.5.0 minOSVersion() is neither the known original "
+                  "nor the complete High Sierra backport."
               )
 
-          path.write_text(patched)
+          final = text.replace(original_function, patched_function, 1) if state == (1, 0) else text
+          if (
+              final.count(patched_function) != 1
+              or "return '-mmacos-version-min=$targetVersion';" in final
+          ):
+              raise SystemExit("ERROR: objective_c High Sierra hook validation failed.")
 
-          final = path.read_text()
-          if "return '-mmacos-version-min=10.13';" not in final:
-              raise SystemExit("ERROR: objective_c High Sierra hook patch was not written.")
+          backup = path.with_name(path.name + ".high-sierra-original")
+          if state == (1, 0):
+              if not backup.exists():
+                  shutil.copy2(path, backup)
+              path.write_text(final)
+              print("objective_c hook now forces -mmacos-version-min=10.13.")
+          else:
+              print("objective_c hook already contains the validated High Sierra backport.")
 
-          if "return '-mmacos-version-min=$targetVersion';" in final:
-              raise SystemExit("ERROR: original objective_c dynamic macOS min-version return remains.")
-
-          print("objective_c hook now forces -mmacos-version-min=10.13.")
+          if backup.is_file():
+              shutil.copy2(backup, "diagnostics/objective_c-build.dart.original")
           PY
 
           cp "$HOOK" diagnostics/objective_c-build.dart.high-sierra
@@ -451,7 +528,7 @@ jobs:
           # Ensure hooks_runner cannot reuse a dill/cache compiled from the
           # unmodified package hook. flutter clean does not necessarily own
           # this whole cache hierarchy.
-          rm -rf app/.dart_tool/hooks_runner
+          rm -rf "$(dirname "$OBJECTIVE_C_PACKAGE_CONFIG")/hooks_runner"
 
           echo "============================================================"
           echo "Patched objective_c minOSVersion()"
@@ -669,10 +746,13 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path("app/.flutter-plugins-dependencies").read_text())
-          for plugin in data.get("plugins", {}).get("macos", []):
-              if plugin.get("name") == "connectivity_plus":
-                  print(plugin["path"])
-                  break
+          plugins = [
+              plugin for plugin in data.get("plugins", {}).get("macos", [])
+              if plugin.get("name") == "connectivity_plus"
+          ]
+          if len(plugins) != 1 or not plugins[0].get("path"):
+              raise SystemExit("ERROR: Expected one connectivity_plus plugin in the macOS plugin graph.")
+          print(plugins[0]["path"])
           PY
           )"
 
@@ -685,8 +765,12 @@ jobs:
           PODSPEC="$CONNECTIVITY_ROOT/macos/connectivity_plus.podspec"
           test -f "$SOURCE"
           test -f "$PODSPEC"
-          cp "$SOURCE" "${SOURCE}.high-sierra-original"
-          cp "$PODSPEC" "${PODSPEC}.high-sierra-specific-original"
+          if [ ! -f "${SOURCE}.high-sierra-original" ]; then
+            cp "$SOURCE" "${SOURCE}.high-sierra-original"
+          fi
+          if [ ! -f "${PODSPEC}.high-sierra-specific-original" ]; then
+            cp "$PODSPEC" "${PODSPEC}.high-sierra-specific-original"
+          fi
 
           cat > "$SOURCE" <<'SWIFT'
           import Foundation
@@ -4446,12 +4530,12 @@ jobs:
           retention-days: 30
 
       - name: Publish High Sierra GitHub Release
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_release) || (github.event_name == 'push' && github.event.head_commit.message == 'Publish current High Sierra release') }}
+        if: env.PUBLISH_RELEASE == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           if [ "$HIGH_SIERRA_SOURCE_KIND" != "official-release" ]; then
             echo "ERROR: refusing to publish non-release source kind: $HIGH_SIERRA_SOURCE_KIND"
@@ -4463,40 +4547,210 @@ jobs:
           test -f "$ZIP"
           test -f "$CHECKSUM"
 
-          NOTES="$(mktemp)"
-          cat > "$NOTES" <<EOF
-          Unofficial High Sierra backport of LocalSend ${UPSTREAM_RELEASE_TAG}.
+          python3 - "$ZIP" "$CHECKSUM" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
 
-          Target:
-          - macOS 10.13.6 High Sierra
-          - Intel x86_64 only
+          zip_path, checksum_path = map(Path, sys.argv[1:])
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["HIGH_SIERRA_RELEASE_TAG"]
+          build_commit = os.environ["HIGH_SIERRA_BUILD_COMMIT"]
+          upstream_commit = os.environ["UPSTREAM_SOURCE_COMMIT"]
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != build_commit:
+              raise SystemExit("ERROR: checked-out commit changed after source verification.")
+          if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (build_commit, upstream_commit)):
+              raise SystemExit("ERROR: missing verified build/source commit metadata.")
+          base = f"/repos/{repo}"
+          encoded_tag = urllib.parse.quote(tag, safe="")
 
-          This build is produced only after the fail-closed High Sierra compatibility checks in this repository pass. It is not an official LocalSend release.
+          class SafeRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+                  if redirected and urllib.parse.urlsplit(req.full_url).netloc != urllib.parse.urlsplit(newurl).netloc:
+                      redirected.remove_header("Authorization")
+                  return redirected
 
-          Upstream release:
-          https://github.com/localsend/localsend/releases/tag/${UPSTREAM_RELEASE_TAG}
-          EOF
+          opener = urllib.request.build_opener(SafeRedirect())
 
-          if gh release view "$HIGH_SIERRA_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          def api(method, path, payload=None, *, raw=False, missing_ok=False, upload=False):
+              host = "https://uploads.github.com" if upload else "https://api.github.com"
+              headers = {
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/octet-stream" if raw else "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "LocalSend-High-Sierra-release",
+              }
+              if isinstance(payload, bytes):
+                  data = payload
+                  headers["Content-Type"] = "application/octet-stream"
+              else:
+                  data = json.dumps(payload).encode() if payload is not None else None
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(host + path, data=data, headers=headers, method=method)
+              try:
+                  with opener.open(request, timeout=120) as response:
+                      content = response.read()
+              except urllib.error.HTTPError as error:
+                  if missing_ok and method == "GET" and error.code == 404:
+                      return None
+                  raise SystemExit(f"ERROR: GitHub {method} {path} returned HTTP {error.code}; publication stopped.")
+              except (urllib.error.URLError, TimeoutError, OSError) as error:
+                  raise SystemExit(f"ERROR: GitHub {method} {path} failed: {error}; publication stopped.")
+              if raw:
+                  return content
+              if not content:
+                  return None
+              try:
+                  return json.loads(content)
+              except (ValueError, UnicodeDecodeError):
+                  raise SystemExit(f"ERROR: GitHub {method} {path} returned invalid JSON.")
 
-            gh release edit "$HIGH_SIERRA_RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "LocalSend ${UPSTREAM_RELEASE_TAG} for macOS High Sierra" \
-              --notes-file "$NOTES"
+          def checksum_digest(content):
+              try:
+                  text = content.decode("ascii")
+              except UnicodeDecodeError:
+                  raise SystemExit("ERROR: release checksum is not ASCII SHA256 text.")
+              match = re.fullmatch(r"([0-9a-fA-F]{64})[ \t]+\*?" + re.escape(zip_path.name) + r"\r?\n?", text)
+              if not match:
+                  raise SystemExit("ERROR: release checksum does not name the expected ZIP exactly once.")
+              return match.group(1).lower()
 
-            gh release upload "$HIGH_SIERRA_RELEASE_TAG" \
-              "$ZIP" "$CHECKSUM" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          else
-            gh release create "$HIGH_SIERRA_RELEASE_TAG" \
-              "$ZIP" "$CHECKSUM" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "LocalSend ${UPSTREAM_RELEASE_TAG} for macOS High Sierra" \
-              --notes-file "$NOTES"
-          fi
+          local_zip = zip_path.read_bytes()
+          local_checksum = checksum_path.read_bytes()
+          local_digest = hashlib.sha256(local_zip).hexdigest()
+          if not local_zip or checksum_digest(local_checksum) != local_digest:
+              raise SystemExit("ERROR: local ZIP does not match its SHA256 file.")
+
+          def verify_assets(release, expected_digest=None):
+              selected = {}
+              for name in (zip_path.name, checksum_path.name):
+                  matches = [asset for asset in release.get("assets", []) if asset.get("name") == name]
+                  if len(matches) != 1 or matches[0].get("state") != "uploaded" or matches[0].get("size", 0) <= 0:
+                      raise SystemExit(f"ERROR: release {tag} has an incomplete asset {name}; no published assets were replaced.")
+                  selected[name] = matches[0]
+              checksum_asset = selected[checksum_path.name]
+              checksum_bytes = api("GET", f"{base}/releases/assets/{checksum_asset['id']}", raw=True)
+              if len(checksum_bytes) != checksum_asset["size"]:
+                  raise SystemExit("ERROR: downloaded SHA256 asset has an unexpected size.")
+              digest = checksum_digest(checksum_bytes)
+              zip_asset = selected[zip_path.name]
+              remote_digest = zip_asset.get("digest")
+              if remote_digest is None:
+                  # Older GitHub assets may not expose a server-side digest.
+                  remote_zip = api("GET", f"{base}/releases/assets/{zip_asset['id']}", raw=True)
+                  if len(remote_zip) != zip_asset["size"]:
+                      raise SystemExit("ERROR: downloaded release ZIP has an unexpected size.")
+                  remote_digest = "sha256:" + hashlib.sha256(remote_zip).hexdigest()
+              if remote_digest != "sha256:" + digest:
+                  raise SystemExit("ERROR: release ZIP digest does not match the uploaded SHA256 file.")
+              if expected_digest is not None and digest != expected_digest:
+                  raise SystemExit("ERROR: draft assets do not match this validated build.")
+              return digest
+
+          def report(message):
+              print(message)
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a") as stream:
+                      stream.write(message + "\n\n")
+
+          release = api("GET", f"{base}/releases/tags/{encoded_tag}", missing_ok=True)
+          if release is None:
+              # Drafts are also visible through the authenticated release list.
+              page = 1
+              matches = []
+              while True:
+                  releases = api("GET", f"{base}/releases?per_page=100&page={page}")
+                  matches.extend(item for item in releases if item.get("tag_name") == tag)
+                  if len(matches) > 1:
+                      raise SystemExit(f"ERROR: more than one release uses {tag}.")
+                  if len(releases) < 100:
+                      break
+                  page += 1
+              if matches:
+                  release = matches[0]
+
+          if release is not None:
+              if release.get("tag_name") != tag or not isinstance(release.get("draft"), bool) or release.get("prerelease") is not False:
+                  raise SystemExit("ERROR: unexpected release metadata; refusing to modify it.")
+              if not release["draft"]:
+                  digest = verify_assets(release)
+                  report(f"Kept complete published release {tag}; verified ZIP SHA256 {digest}. No assets were replaced.")
+                  raise SystemExit(0)
+
+          def verify_tag(require_exists=False):
+              reference = api("GET", f"{base}/git/ref/tags/{encoded_tag}", missing_ok=True)
+              if reference is None:
+                  if require_exists:
+                      raise SystemExit(f"ERROR: published release tag {tag} is missing.")
+                  return False
+              obj = reference.get("object", {})
+              for _ in range(10):
+                  if obj.get("type") == "commit":
+                      if obj.get("sha") != build_commit:
+                          raise SystemExit(f"ERROR: existing tag {tag} points to {obj.get('sha')}, but this build is {build_commit}; the tag will not be moved.")
+                      return True
+                  if obj.get("type") != "tag":
+                      break
+                  obj = api("GET", f"{base}/git/tags/{obj['sha']}").get("object", {})
+              raise SystemExit(f"ERROR: cannot resolve release tag {tag} to a commit.")
+
+          verify_tag()
+          notes = (
+              f"Unofficial High Sierra backport of LocalSend {tag}.\n\n"
+              "Target: macOS 10.13.6 High Sierra, Intel x86_64 only.\n\n"
+              "This build is published only after all fail-closed High Sierra compatibility checks pass. "
+              "It is not an official LocalSend release.\n\n"
+              f"Upstream release: https://github.com/localsend/localsend/releases/tag/{tag}\n"
+              f"Verified upstream commit: https://github.com/localsend/localsend/commit/{upstream_commit}\n"
+              f"High Sierra build commit: https://github.com/{repo}/commit/{build_commit}\n"
+          )
+          metadata = {
+              "tag_name": tag,
+              "target_commitish": build_commit,
+              "name": f"LocalSend {tag} for macOS High Sierra",
+              "body": notes,
+              "draft": True,
+              "prerelease": False,
+          }
+          if release is None:
+              release = api("POST", f"{base}/releases", metadata)
+          else:
+              # Updating target_commitish matters when a draft has no Git tag yet.
+              release = api("PATCH", f"{base}/releases/{release['id']}", metadata)
+          if release.get("draft") is not True:
+              raise SystemExit("ERROR: release is not a draft; refusing to replace assets.")
+          release_id = release["id"]
+
+          # Only unpublished drafts can have their incomplete assets replaced.
+          for asset in release.get("assets", []):
+              if asset.get("name") in (zip_path.name, checksum_path.name):
+                  api("DELETE", f"{base}/releases/assets/{asset['id']}")
+          for path, content in ((zip_path, local_zip), (checksum_path, local_checksum)):
+              query = urllib.parse.urlencode({"name": path.name})
+              api("POST", f"{base}/releases/{release_id}/assets?{query}", content, upload=True)
+
+          release = api("GET", f"{base}/releases/{release_id}")
+          if (release.get("draft") is not True or release.get("prerelease") is not False
+                  or release.get("tag_name") != tag):
+              raise SystemExit("ERROR: draft source changed while uploading; publication stopped.")
+          verify_assets(release, expected_digest=local_digest)
+          if not verify_tag() and release.get("target_commitish") != build_commit:
+              raise SystemExit("ERROR: untagged draft does not target this build commit; publication stopped.")
+          published = api("PATCH", f"{base}/releases/{release_id}", {"draft": False, "make_latest": "legacy"})
+          if published.get("draft") is not False or published.get("prerelease") is not False:
+              raise SystemExit("ERROR: GitHub did not confirm publication of a stable release.")
+          verify_tag(require_exists=True)
+          report(f"Published {tag} from {build_commit} after verifying both assets and ZIP SHA256 {local_digest}.")
+          PY
 
       - name: Collect diagnostics
         if: always()
